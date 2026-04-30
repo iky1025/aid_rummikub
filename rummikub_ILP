@@ -1,0 +1,225 @@
+# rummikub_complete_ilp.py
+
+from dataclasses import dataclass
+from itertools import combinations
+from collections import Counter
+import pulp
+
+
+COLORS = ["R", "B", "Y", "K"]
+NUMBERS = range(1, 14)
+
+
+@dataclass(frozen=True)
+class Tile:
+    color: str
+    number: int
+
+    def __repr__(self):
+        return f"{self.color}{self.number}"
+
+
+def parse_tile(label):
+    return Tile(label[0], int(label[1:]))
+
+
+def parse_tiles(labels):
+    return [parse_tile(label) for label in labels]
+
+
+def flatten(list_of_lists):
+    return [x for inner in list_of_lists for x in inner]
+
+
+def generate_all_valid_sets():
+    all_sets = []
+
+    # Run: 같은 색, 연속 숫자 3개 이상
+    for color in COLORS:
+        for start in range(1, 14):
+            for end in range(start + 2, 14):
+                run = [Tile(color, n) for n in range(start, end + 1)]
+                all_sets.append(run)
+
+    # Group: 같은 숫자, 서로 다른 색 3개 또는 4개
+    for number in NUMBERS:
+        for size in [3, 4]:
+            for color_comb in combinations(COLORS, size):
+                group = [Tile(color, number) for color in color_comb]
+                all_sets.append(group)
+
+    return all_sets
+
+
+def is_valid_set(tile_set):
+    if len(tile_set) < 3:
+        return False
+
+    colors = [t.color for t in tile_set]
+    numbers = [t.number for t in tile_set]
+
+    # Group
+    if len(set(numbers)) == 1:
+        return len(set(colors)) == len(colors)
+
+    # Run
+    if len(set(colors)) == 1:
+        nums = sorted(numbers)
+        return all(nums[i] + 1 == nums[i + 1] for i in range(len(nums) - 1))
+
+    return False
+
+
+def validate_table_sets(table_sets):
+    for s in table_sets:
+        if not is_valid_set(s):
+            return False
+    return True
+
+
+def can_make_set(candidate_set, available_counter):
+    need = Counter(candidate_set)
+
+    for tile, count in need.items():
+        if available_counter[tile] < count:
+            return False
+
+    return True
+
+
+def filter_available_sets(all_sets, available_tiles):
+    available_counter = Counter(available_tiles)
+
+    candidates = []
+
+    for s in all_sets:
+        if can_make_set(s, available_counter):
+            candidates.append(s)
+
+    return candidates
+
+
+def solve_rummikub_ilp(hand_tiles, table_sets):
+    """
+    hand_tiles:
+        내 손패 타일 리스트
+
+    table_sets:
+        테이블 위 세트들의 리스트
+        예:
+        [
+            [R5, R6, R7],
+            [B3, B4, B5],
+            [R9, B9, K9]
+        ]
+
+    목표:
+        테이블 타일은 유지하면서
+        손패 타일을 최대한 많이 사용하는 새 세트 구성을 찾는다.
+    """
+
+    if not validate_table_sets(table_sets):
+        raise ValueError("테이블에 유효하지 않은 세트가 있습니다.")
+
+    table_tiles = flatten(table_sets)
+    available_tiles = hand_tiles + table_tiles
+
+    hand_counter = Counter(hand_tiles)
+    table_counter = Counter(table_tiles)
+    available_counter = Counter(available_tiles)
+
+    all_sets = generate_all_valid_sets()
+    candidates = filter_available_sets(all_sets, available_tiles)
+
+    problem = pulp.LpProblem("Rummikub_Complete_ILP", pulp.LpMaximize)
+
+    # x_i = i번째 후보 세트를 선택할지 여부
+    x = [
+        pulp.LpVariable(f"x_{i}", cat="Binary")
+        for i in range(len(candidates))
+    ]
+
+    # 목적함수:
+    # 테이블 타일은 반드시 유지되므로,
+    # 전체 사용 타일 수를 최대화하면 결국 손패 사용량이 최대화됨
+    problem += pulp.lpSum(
+        len(candidates[i]) * x[i]
+        for i in range(len(candidates))
+    )
+
+    # 제약식:
+    # 각 타일 타입별 사용 개수 제한
+    for tile in available_counter:
+        used_count = pulp.lpSum(
+            Counter(candidates[i])[tile] * x[i]
+            for i in range(len(candidates))
+        )
+
+        # 전체 사용량은 현재 가진 개수를 넘을 수 없음
+        problem += used_count <= available_counter[tile]
+
+        # 테이블에 있던 타일은 최소한 그 개수만큼 다시 사용해야 함
+        if table_counter[tile] > 0:
+            problem += used_count >= table_counter[tile]
+
+    result_status = problem.solve(pulp.PULP_CBC_CMD(msg=False))
+
+    selected_sets = []
+
+    for i, s in enumerate(candidates):
+        value = pulp.value(x[i])
+        if value == 1:
+            selected_sets.append(s)
+
+    return selected_sets, candidates, pulp.LpStatus[result_status]
+
+
+def print_sets(title, sets):
+    print(f"\n=== {title} ===")
+
+    if not sets:
+        print("없음")
+        return
+
+    for i, s in enumerate(sets):
+        print(f"{i}: {s}")
+
+
+if __name__ == "__main__":
+    # 내 손패
+    hand_labels = [
+        "R8",
+        "R1", "R2", "R3",
+        "B9", "K9"
+    ]
+
+    # 테이블 위 세트
+    table_labels_sets = [
+        ["R5", "R6", "R7"],
+        ["R9", "Y9", "B9"]
+    ]
+
+    hand_tiles = parse_tiles(hand_labels)
+
+    table_sets = [
+        parse_tiles(s)
+        for s in table_labels_sets
+    ]
+
+    selected_sets, candidates, status = solve_rummikub_ilp(
+        hand_tiles,
+        table_sets
+    )
+
+    print("상태:", status)
+
+    print_sets("기존 테이블 세트", table_sets)
+    print_sets("현재 만들 수 있는 후보 세트", candidates)
+    print_sets("ILP 선택 결과", selected_sets)
+
+    table_tile_count = sum(len(s) for s in table_sets)
+    selected_tile_count = sum(len(s) for s in selected_sets)
+
+    print("\n기존 테이블 타일 수:", table_tile_count)
+    print("선택 결과 전체 타일 수:", selected_tile_count)
+    print("새로 사용한 손패 타일 수:", selected_tile_count - table_tile_count)
