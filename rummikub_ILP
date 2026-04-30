@@ -1,5 +1,3 @@
-# rummikub_complete_ilp.py
-
 from dataclasses import dataclass
 from itertools import combinations
 from collections import Counter
@@ -14,17 +12,30 @@ NUMBERS = range(1, 14)
 class Tile:
     color: str
     number: int
+    is_joker: bool = False
 
     def __repr__(self):
+        if self.is_joker:
+            return "J"
         return f"{self.color}{self.number}"
 
 
+JOKER = Tile("J", 0, True)
+
+
 def parse_tile(label):
+    label = label.strip().upper()
+
+    if label == "J":
+        return JOKER
+
     return Tile(label[0], int(label[1:]))
 
 
-def parse_tiles(labels):
-    return [parse_tile(label) for label in labels]
+def parse_tiles(line):
+    if not line.strip():
+        return []
+    return [parse_tile(label) for label in line.split()]
 
 
 def flatten(list_of_lists):
@@ -52,17 +63,60 @@ def generate_all_valid_sets():
 
 
 def is_valid_set(tile_set):
+    """
+    테이블 입력 검사용.
+    여기서는 조커가 있는 세트도 허용하기 위해
+    조커를 가능한 타일 대체로 보고 검사한다.
+    """
+
+    if len(tile_set) < 3:
+        return False
+
+    joker_count = sum(1 for t in tile_set if t.is_joker)
+    normal_tiles = [t for t in tile_set if not t.is_joker]
+
+    if joker_count == 0:
+        return is_valid_set_without_joker(tile_set)
+
+    all_possible_sets = generate_all_valid_sets()
+
+    for valid_set in all_possible_sets:
+        if len(valid_set) != len(tile_set):
+            continue
+
+        valid_counter = Counter(valid_set)
+        normal_counter = Counter(normal_tiles)
+
+        missing = 0
+
+        for tile, count in valid_counter.items():
+            have = normal_counter[tile]
+            if have < count:
+                missing += count - have
+
+        extra_normal_tiles = 0
+        for tile, count in normal_counter.items():
+            if count > valid_counter[tile]:
+                extra_normal_tiles += count - valid_counter[tile]
+
+        if missing == joker_count and extra_normal_tiles == 0:
+            return True
+
+    return False
+
+
+def is_valid_set_without_joker(tile_set):
     if len(tile_set) < 3:
         return False
 
     colors = [t.color for t in tile_set]
     numbers = [t.number for t in tile_set]
 
-    # Group
+    # Group: 같은 숫자, 서로 다른 색
     if len(set(numbers)) == 1:
         return len(set(colors)) == len(colors)
 
-    # Run
+    # Run: 같은 색, 연속 숫자
     if len(set(colors)) == 1:
         nums = sorted(numbers)
         return all(nums[i] + 1 == nums[i + 1] for i in range(len(nums) - 1))
@@ -77,101 +131,143 @@ def validate_table_sets(table_sets):
     return True
 
 
-def can_make_set(candidate_set, available_counter):
+def can_make_set_with_joker(candidate_set, available_counter):
+    """
+    candidate_set은 일반 타일로만 구성된 완성 세트.
+    부족한 타일은 조커로 대체할 수 있다.
+    """
+
+    joker_count = available_counter[JOKER]
     need = Counter(candidate_set)
 
-    for tile, count in need.items():
-        if available_counter[tile] < count:
-            return False
+    missing = 0
 
-    return True
+    for tile, count in need.items():
+        have = available_counter[tile]
+        if have < count:
+            missing += count - have
+
+    return missing <= joker_count
+
+
+def make_candidate_info(candidate_set, available_counter):
+    """
+    후보 세트를 만들 때 실제 일반 타일을 몇 개 쓰고,
+    조커가 몇 개 필요한지 계산한다.
+    """
+
+    need = Counter(candidate_set)
+    real_used = Counter()
+    joker_used = 0
+    joker_as = []
+
+    for tile, count in need.items():
+        have = available_counter[tile]
+        use_real = min(have, count)
+        use_joker = count - use_real
+
+        if use_real > 0:
+            real_used[tile] = use_real
+
+        if use_joker > 0:
+            joker_used += use_joker
+            joker_as.extend([tile] * use_joker)
+
+    return {
+        "tiles": candidate_set,
+        "real_used": real_used,
+        "joker_used": joker_used,
+        "joker_as": joker_as
+    }
 
 
 def filter_available_sets(all_sets, available_tiles):
     available_counter = Counter(available_tiles)
-
     candidates = []
 
     for s in all_sets:
-        if can_make_set(s, available_counter):
-            candidates.append(s)
+        if can_make_set_with_joker(s, available_counter):
+            candidates.append(make_candidate_info(s, available_counter))
 
     return candidates
 
 
 def solve_rummikub_ilp(hand_tiles, table_sets):
-    """
-    hand_tiles:
-        내 손패 타일 리스트
-
-    table_sets:
-        테이블 위 세트들의 리스트
-        예:
-        [
-            [R5, R6, R7],
-            [B3, B4, B5],
-            [R9, B9, K9]
-        ]
-
-    목표:
-        테이블 타일은 유지하면서
-        손패 타일을 최대한 많이 사용하는 새 세트 구성을 찾는다.
-    """
-
     if not validate_table_sets(table_sets):
         raise ValueError("테이블에 유효하지 않은 세트가 있습니다.")
 
     table_tiles = flatten(table_sets)
     available_tiles = hand_tiles + table_tiles
 
-    hand_counter = Counter(hand_tiles)
     table_counter = Counter(table_tiles)
     available_counter = Counter(available_tiles)
+
+    joker_count = available_counter[JOKER]
 
     all_sets = generate_all_valid_sets()
     candidates = filter_available_sets(all_sets, available_tiles)
 
-    problem = pulp.LpProblem("Rummikub_Complete_ILP", pulp.LpMaximize)
+    problem = pulp.LpProblem("Rummikub_Complete_ILP_With_Joker", pulp.LpMaximize)
 
-    # x_i = i번째 후보 세트를 선택할지 여부
     x = [
         pulp.LpVariable(f"x_{i}", cat="Binary")
         for i in range(len(candidates))
     ]
 
-    # 목적함수:
-    # 테이블 타일은 반드시 유지되므로,
-    # 전체 사용 타일 수를 최대화하면 결국 손패 사용량이 최대화됨
+    # 목적함수: 선택한 세트들의 전체 타일 수 최대화
     problem += pulp.lpSum(
-        len(candidates[i]) * x[i]
+        len(candidates[i]["tiles"]) * x[i]
         for i in range(len(candidates))
     )
 
-    # 제약식:
-    # 각 타일 타입별 사용 개수 제한
-    for tile in available_counter:
+    # 일반 타일 사용 개수 제한
+    normal_tiles = [tile for tile in available_counter if not tile.is_joker]
+
+    for tile in normal_tiles:
         used_count = pulp.lpSum(
-            Counter(candidates[i])[tile] * x[i]
+            candidates[i]["real_used"][tile] * x[i]
             for i in range(len(candidates))
         )
 
-        # 전체 사용량은 현재 가진 개수를 넘을 수 없음
         problem += used_count <= available_counter[tile]
 
-        # 테이블에 있던 타일은 최소한 그 개수만큼 다시 사용해야 함
         if table_counter[tile] > 0:
             problem += used_count >= table_counter[tile]
+
+    # 조커 사용 개수 제한
+    problem += pulp.lpSum(
+        candidates[i]["joker_used"] * x[i]
+        for i in range(len(candidates))
+    ) <= joker_count
 
     result_status = problem.solve(pulp.PULP_CBC_CMD(msg=False))
 
     selected_sets = []
 
-    for i, s in enumerate(candidates):
+    for i, c in enumerate(candidates):
         value = pulp.value(x[i])
         if value == 1:
-            selected_sets.append(s)
+            selected_sets.append(c)
 
     return selected_sets, candidates, pulp.LpStatus[result_status]
+
+
+def print_candidate_sets(title, sets):
+    print(f"\n=== {title} ===")
+
+    if not sets:
+        print("없음")
+        return
+
+    for i, c in enumerate(sets):
+        tiles = c["tiles"]
+        joker_used = c["joker_used"]
+        joker_as = c["joker_as"]
+
+        if joker_used > 0:
+            print(f"{i}: {tiles}  / 조커 {joker_used}개 사용 -> {joker_as}")
+        else:
+            print(f"{i}: {tiles}")
 
 
 def print_sets(title, sets):
@@ -185,41 +281,52 @@ def print_sets(title, sets):
         print(f"{i}: {s}")
 
 
+def input_table_sets():
+    table_sets = []
+
+    print("\n테이블 세트를 한 줄씩 입력하세요.")
+    print("예: R5 R6 R7")
+    print("조커는 J로 입력하세요.")
+    print("입력을 끝내려면 빈 줄에서 Enter를 누르세요.\n")
+
+    while True:
+        line = input("테이블 세트 입력: ").strip()
+
+        if line == "":
+            break
+
+        table_sets.append(parse_tiles(line))
+
+    return table_sets
+
+
 if __name__ == "__main__":
-    # 내 손패
-    hand_labels = [
-        "R8",
-        "R1", "R2", "R3",
-        "B9", "K9"
-    ]
+    print("=== 루미큐브 ILP 입력 ===")
+    print("타일 입력 예: R1 B3 Y10 K13 J")
+    print("색상: R=빨강, B=파랑, Y=노랑, K=검정")
+    print("조커: J\n")
 
-    # 테이블 위 세트
-    table_labels_sets = [
-        ["R5", "R6", "R7"],
-        ["R9", "Y9", "B9"]
-    ]
+    hand_line = input("내 손패를 입력하세요: ")
+    hand_tiles = parse_tiles(hand_line)
 
-    hand_tiles = parse_tiles(hand_labels)
-
-    table_sets = [
-        parse_tiles(s)
-        for s in table_labels_sets
-    ]
+    table_sets = input_table_sets()
 
     selected_sets, candidates, status = solve_rummikub_ilp(
         hand_tiles,
         table_sets
     )
 
-    print("상태:", status)
+    print("\n상태:", status)
 
+    print_sets("입력한 손패", [hand_tiles])
     print_sets("기존 테이블 세트", table_sets)
-    print_sets("현재 만들 수 있는 후보 세트", candidates)
-    print_sets("ILP 선택 결과", selected_sets)
+    print_candidate_sets("현재 만들 수 있는 후보 세트", candidates)
+    print_candidate_sets("ILP 선택 결과", selected_sets)
 
     table_tile_count = sum(len(s) for s in table_sets)
-    selected_tile_count = sum(len(s) for s in selected_sets)
+    selected_tile_count = sum(len(c["tiles"]) for c in selected_sets)
 
     print("\n기존 테이블 타일 수:", table_tile_count)
     print("선택 결과 전체 타일 수:", selected_tile_count)
     print("새로 사용한 손패 타일 수:", selected_tile_count - table_tile_count)
+    
