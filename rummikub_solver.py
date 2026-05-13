@@ -23,13 +23,6 @@ class Tile:
             return "J"
         return f"{self.color}{self.number}"
 
-    @property
-    def score(self):
-        if self.is_joker:
-            return 30
-        return self.number
-    # 점수계산은 지우기
-
 
 JOKER = Tile("J", 0, True)
 
@@ -51,15 +44,13 @@ def parse_tile(label):
         raise ValueError(f"숫자는 1부터 13까지 가능합니다: {number}")
 
     return Tile(color, number)
-    
 
 
 def parse_tiles(line):
-    # 문자열 나열된거를 타일 객체로 변환    
+    # 문자열 나열된거를 타일 객체로 변환
     if not line.strip():
         return []
     return [parse_tile(label) for label in line.split()]
-
 
 
 def format_tiles(tiles):
@@ -187,10 +178,6 @@ class CandidateSet:
     def length(self):
         return len(self.completed_tiles)
 
-    @property
-    def score(self):
-        return sum(tile.score for tile in self.completed_tiles)
-
     def display_tiles(self):
         real_used_left = Counter(self.real_used)
         joker_as_left = Counter(self.joker_as)
@@ -278,7 +265,6 @@ class ILPResult:
     table_tile_count: int
     selected_tile_count: int
     used_hand_tile_count: int
-    used_hand_score: int
     remaining_hand: list
 
     def print_summary(self):
@@ -288,7 +274,6 @@ class ILPResult:
         print("기존 테이블 타일 수:", self.table_tile_count)
         print("선택 결과 전체 타일 수:", self.selected_tile_count)
         print("새로 사용한 손패 타일 수:", self.used_hand_tile_count)
-        print("새로 사용한 손패 점수:", self.used_hand_score)
 
         if self.remaining_hand:
             print("남은 손패:", format_tiles(self.remaining_hand))
@@ -342,7 +327,6 @@ class RummikubILPSolver:
         available_counter = Counter(available_tiles)
 
         table_tile_count = len(table_tiles)
-        table_score = sum(tile.score for tile in table_tiles)
 
         table_joker_count = table_counter[JOKER]
         available_joker_count = available_counter[JOKER]
@@ -386,11 +370,6 @@ class RummikubILPSolver:
             for i in range(len(candidates))
         )
 
-        used_score_expr = pulp.lpSum(
-            candidates[i].score * x[i]
-            for i in range(len(candidates))
-        )
-
         # 1. 가진 일반 타일보다 많이 쓸 수 없다.
         for tile in normal_tiles:
             problem += used_real_expr[tile] <= available_counter[tile]
@@ -408,7 +387,6 @@ class RummikubILPSolver:
             problem += used_joker_expr >= table_joker_count
 
         used_hand_tile_expr = used_total_expr - table_tile_count
-        used_hand_score_expr = used_score_expr - table_score
 
         # 5. 필요하면 손패를 최소 1개 이상 쓰도록 강제
         if require_use_at_least_one_hand_tile:
@@ -441,9 +419,6 @@ class RummikubILPSolver:
         selected_tile_count = sum(tile_set.length for tile_set in selected_sets)
         used_hand_tile_count = selected_tile_count - table_tile_count
 
-        selected_score = sum(tile_set.score for tile_set in selected_sets)
-        used_hand_score = selected_score - table_score
-
         remaining_hand = self._compute_remaining_hand(
             hand_tiles,
             selected_sets,
@@ -464,7 +439,6 @@ class RummikubILPSolver:
             table_tile_count=table_tile_count,
             selected_tile_count=selected_tile_count,
             used_hand_tile_count=used_hand_tile_count,
-            used_hand_score=used_hand_score,
             remaining_hand=remaining_hand,
         )
 

@@ -31,7 +31,6 @@ def print_candidate_results(results):
     for i, result in enumerate(results):
         print(f"\n--- 후보 {i} ---")
         print("새로 사용한 손패 타일 수:", result.used_hand_tile_count)
-        print("새로 사용한 손패 점수:", result.used_hand_score)
 
         print("선택된 세트:")
         for j, tile_set in enumerate(result.selected_sets):
