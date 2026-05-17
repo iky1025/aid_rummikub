@@ -63,7 +63,7 @@ class RummikubPPOEnv:
         if not self.last_candidates:
             self.last_candidates = self.env.solve_candidate_moves(
                 max_candidates=self.max_candidates
-            )
+            )[: self.max_candidates]
         candidates = self.last_candidates
 
         if action < len(candidates):
@@ -157,7 +157,7 @@ class RummikubPPOEnv:
         self._sync_env_hand(self.ppo_player)
         self.last_candidates = self.env.solve_candidate_moves(
             max_candidates=self.max_candidates
-        )
+        )[: self.max_candidates]
 
         mask = np.zeros(self.max_candidates + 1, dtype=np.float32)
         for i in range(len(self.last_candidates)):

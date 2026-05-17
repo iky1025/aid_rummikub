@@ -191,7 +191,7 @@ def train():
             f"candidate_count={info['candidate_count']}"
         )
 
-        if (update + 1) % 50 == 0:
+        if (update + 1) % 10 == 0:
             torch.save(model.state_dict(), "rummikub_ppo_model.pt")
             print("model saved: rummikub_ppo_model.pt")
 

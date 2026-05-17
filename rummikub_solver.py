@@ -307,6 +307,7 @@ class RummikubILPSolver:
         table_sets=None,
         require_use_at_least_one_hand_tile=False,
         excluded_solutions=None,
+        target_joker_used=None,
     ):
         if table_sets is None:
             table_sets = []
@@ -386,6 +387,9 @@ class RummikubILPSolver:
         if table_joker_count > 0:
             problem += used_joker_expr >= table_joker_count
 
+        if target_joker_used is not None:
+            problem += used_joker_expr == target_joker_used
+
         used_hand_tile_expr = used_total_expr - table_tile_count
 
         # 5. 필요하면 손패를 최소 1개 이상 쓰도록 강제
@@ -462,28 +466,42 @@ class RummikubILPSolver:
         ILPResult 리스트
         """
 
+        if table_sets is None:
+            table_sets = []
+
         results = []
-        excluded_solutions = []
 
-        for _ in range(max_solutions):
-            result = self.solve(
-                hand_tiles=hand_tiles,
-                table_sets=table_sets,
-                require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
-                excluded_solutions=excluded_solutions,
-            )
+        table_tiles = flatten(table_sets)
+        available_tiles = list(hand_tiles) + table_tiles
+        available_counter = Counter(available_tiles)
+        table_counter = Counter(table_tiles)
 
-            if result.status != "Optimal":
-                break
+        total_joker_count = available_counter[JOKER]
+        min_joker_used = table_counter[JOKER]
 
-            if result.used_hand_tile_count <= 0:
-                break
+        for joker_target in range(min_joker_used, total_joker_count + 1):
+            excluded_solutions = []
 
-            if len(result.selected_indices) == 0:
-                break
+            for _ in range(max_solutions):
+                result = self.solve(
+                    hand_tiles=hand_tiles,
+                    table_sets=table_sets,
+                    require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
+                    excluded_solutions=excluded_solutions,
+                    target_joker_used=joker_target,
+                )
 
-            results.append(result)
-            excluded_solutions.append(result.selected_indices)
+                if result.status != "Optimal":
+                    break
+
+                if result.used_hand_tile_count <= 0:
+                    break
+
+                if len(result.selected_indices) == 0:
+                    break
+
+                results.append(result)
+                excluded_solutions.append(result.selected_indices)
 
         return results
 
