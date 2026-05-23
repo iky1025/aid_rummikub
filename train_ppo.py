@@ -51,7 +51,7 @@ def train():
     ).to(device)
 
     optimizer = Adam(model.parameters(), lr=3e-4)
-
+ 
     n_steps = 100
     total_updates = 10
     batch_size = 5

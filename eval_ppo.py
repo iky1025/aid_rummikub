@@ -4,13 +4,14 @@ from ppo_env import RummikubPPOEnv
 from ppo_model import ActorCritic
 
 
-def evaluate(model_path="rummikub_ppo_model.pt", episodes=10, seed=123):
+def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    max_candidates = 10
+    state_dict = torch.load(model_path, map_location=device)
+    action_dim = state_dict["actor.weight"].shape[0]
+    max_candidates = action_dim - 1
     max_turns = 100
     obs_dim = 53 + 53 + 1
-    action_dim = max_candidates + 1
 
     env = RummikubPPOEnv(
         max_candidates=max_candidates,
@@ -19,7 +20,6 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=10, seed=123):
     )
 
     model = ActorCritic(obs_dim=obs_dim, action_dim=action_dim).to(device)
-    state_dict = torch.load(model_path, map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
 
