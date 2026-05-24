@@ -1,3 +1,7 @@
+import csv
+import os
+import time
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -24,7 +28,17 @@ def compute_gae(rewards, values, dones, last_value, gamma=0.99, gae_lambda=0.95)
 
 
 def train():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    print(f"using device: {device}")
+
+    seed = 42
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     max_candidates = 10
     max_turns = 100
@@ -32,7 +46,7 @@ def train():
     env = RummikubPPOEnv(
         max_candidates=max_candidates,
         max_turns=max_turns,
-        seed=42,
+        seed=seed,
     )
 
     obs_dim = 52 + 52 + 1
@@ -47,19 +61,38 @@ def train():
 
     optimizer = Adam(model.parameters(), lr=3e-4)
 
-    n_steps = 100
-    total_updates = 2
-    batch_size = 5
-    ppo_epochs = 2
+    n_steps = 512
+    total_updates = 50
+    batch_size = 64
+    ppo_epochs = 4
+    save_every = 10
+    model_path = "rummikub_ppo_model.pt"
+    log_path = "train_log.csv"
 
     gamma = 0.99
     gae_lambda = 0.95
     clip_range = 0.2
-    value_coef = 0.5
+    value_coef = 0.1
     entropy_coef = 0.01
+
+    log_file = open(log_path, "w", newline="")
+    log_writer = csv.writer(log_file)
+    log_writer.writerow([
+        "update", "elapsed_sec", "steps_total",
+        "episodes", "win_rate", "loss_rate", "timeout_rate",
+        "avg_episode_reward", "avg_episode_length",
+        "draw_action_ratio", "avg_candidate_count",
+        "actor_loss", "critic_loss", "entropy",
+        "best_avg_reward",
+    ])
+
+    best_avg_reward = -float("inf")
+    steps_total = 0
+    train_start = time.time()
 
     env.reset()
     obs, cand_feats, action_mask = env.get_policy_inputs()
+    current_episode_length = 0
 
     for update in range(total_updates):
         obs_list = []
@@ -72,6 +105,12 @@ def train():
         mask_list = []
 
         episode_rewards = []
+        episode_lengths = []
+        win_count = 0
+        loss_count = 0
+        timeout_count = 0
+        draw_action_count = 0
+        candidate_count_sum = 0
         current_episode_reward = 0.0
         info = None
 
@@ -96,10 +135,23 @@ def train():
             mask_list.append(action_mask)
 
             current_episode_reward += reward
+            current_episode_length += 1
+            steps_total += 1
+            if action_int == max_candidates:
+                draw_action_count += 1
+            candidate_count_sum += info.get("candidate_count", 0)
 
             if done:
                 episode_rewards.append(current_episode_reward)
+                episode_lengths.append(current_episode_length)
+                if info["ppo_hand_count"] == 0:
+                    win_count += 1
+                elif info["ilp_hand_count"] == 0:
+                    loss_count += 1
+                else:
+                    timeout_count += 1
                 current_episode_reward = 0.0
+                current_episode_length = 0
                 env.reset()
 
             obs, cand_feats, action_mask = env.get_policy_inputs()
@@ -130,6 +182,11 @@ def train():
 
         data_size = n_steps
         indices = np.arange(data_size)
+
+        actor_loss_sum = 0.0
+        critic_loss_sum = 0.0
+        entropy_sum = 0.0
+        update_steps = 0
 
         for _ in range(ppo_epochs):
             np.random.shuffle(indices)
@@ -167,28 +224,54 @@ def train():
                 loss.backward()
                 optimizer.step()
 
-        avg_reward = sum(episode_rewards) / len(episode_rewards) if episode_rewards else current_episode_reward
+                actor_loss_sum += actor_loss.item()
+                critic_loss_sum += critic_loss.item()
+                entropy_sum += entropy_loss.item()
+                update_steps += 1
 
-        if info is None:
-            info = {
-                "ppo_hand_count": len(env.hands[env.ppo_player]),
-                "ilp_hand_count": len(env.hands[env.ilp_player]),
-                "deck_count": len(env.env.deck),
-                "candidate_count": 0,
-            }
+        episodes = len(episode_rewards)
+        avg_reward = sum(episode_rewards) / episodes if episodes else current_episode_reward
+        avg_length = sum(episode_lengths) / episodes if episodes else 0.0
+        win_rate = win_count / episodes if episodes else 0.0
+        loss_rate = loss_count / episodes if episodes else 0.0
+        timeout_rate = timeout_count / episodes if episodes else 0.0
+        draw_ratio = draw_action_count / n_steps
+        avg_candidate_count = candidate_count_sum / n_steps
+        avg_actor_loss = actor_loss_sum / max(1, update_steps)
+        avg_critic_loss = critic_loss_sum / max(1, update_steps)
+        avg_entropy = entropy_sum / max(1, update_steps)
+        elapsed = time.time() - train_start
+
+        if avg_reward > best_avg_reward:
+            best_avg_reward = avg_reward
+            torch.save(model.state_dict(), f"rummikub_ppo_best.pt")
 
         print(
-            f"update={update + 1}, "
-            f"avg_episode_reward={avg_reward:.2f}, "
-            f"ppo_hand_count={info['ppo_hand_count']}, "
-            f"ilp_hand_count={info['ilp_hand_count']}, "
-            f"last_deck_count={info['deck_count']}, "
-            f"candidate_count={info['candidate_count']}"
+            f"upd={update + 1:3d}/{total_updates} "
+            f"t={elapsed:6.1f}s steps={steps_total:5d} "
+            f"eps={episodes:2d} W/L/T={win_count}/{loss_count}/{timeout_count} "
+            f"rew={avg_reward:7.2f} len={avg_length:5.1f} "
+            f"draw={draw_ratio:.2f} cand={avg_candidate_count:4.1f} "
+            f"a={avg_actor_loss:+.3f} c={avg_critic_loss:.3f} ent={avg_entropy:.3f} "
+            f"best={best_avg_reward:7.2f}"
         )
 
-        if (update + 1) % 10 == 0:
-            torch.save(model.state_dict(), "rummikub_ppo_model.pt")
-            print("model saved: rummikub_ppo_model.pt")
+        log_writer.writerow([
+            update + 1, f"{elapsed:.2f}", steps_total,
+            episodes, f"{win_rate:.3f}", f"{loss_rate:.3f}", f"{timeout_rate:.3f}",
+            f"{avg_reward:.3f}", f"{avg_length:.2f}",
+            f"{draw_ratio:.3f}", f"{avg_candidate_count:.2f}",
+            f"{avg_actor_loss:.4f}", f"{avg_critic_loss:.4f}", f"{avg_entropy:.4f}",
+            f"{best_avg_reward:.3f}",
+        ])
+        log_file.flush()
+
+        if (update + 1) % save_every == 0 or (update + 1) == total_updates:
+            torch.save(model.state_dict(), model_path)
+            print(f"  saved: {model_path}")
+
+    log_file.close()
+    print(f"\ndone. log: {log_path}, model: {model_path}, best: rummikub_ppo_best.pt")
 
 
 if __name__ == "__main__":

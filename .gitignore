@@ -6,3 +6,6 @@ readme.md
 __pycache__/
 *.py[cod]
 *.pt
+.vscode/
+train_log.csv
+*.pt

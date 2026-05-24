@@ -1,5 +1,3 @@
-import copy
-
 import numpy as np
 
 from rummikub_env import RummikubEnv
@@ -70,9 +68,9 @@ class RummikubPPOEnv:
         if action < len(candidates):
             result = candidates[action]
             self.env.apply_solution(result)
-            reward += result.used_hand_tile_count
+            reward += 0.1 * result.used_hand_tile_count
             if len(self.env.hand) == 0:
-                reward += 50.0
+                reward += 5.0
                 self.hands[self.ppo_player] = list(self.env.hand)
                 self.last_candidates = []
                 obs = self.get_observation(self.ppo_player)
@@ -81,12 +79,12 @@ class RummikubPPOEnv:
         else:
             drawn_tile = self.env.draw_tile()
             if drawn_tile is None:
-                reward -= 2.0
-            else:
                 reward -= 1.0
+            else:
+                reward -= 0.5
 
         self.hands[self.ppo_player] = list(self.env.hand)
-        reward -= 0.1
+        reward -= 0.01
 
         self.current_player = self.ilp_player
         self._sync_env_hand(self.ilp_player)
@@ -106,10 +104,10 @@ class RummikubPPOEnv:
         self.hands[self.ilp_player] = list(self.env.hand)
 
         if ilp_used_hand_tiles > 0:
-            reward -= 0.2 * ilp_used_hand_tiles
+            reward -= 0.02 * ilp_used_hand_tiles
 
         if ilp_done:
-            reward -= 50.0
+            reward -= 5.0
             self.last_candidates = []
             obs = self.get_observation(self.ppo_player)
             info = self._build_info(len(candidates), ilp_used_hand_tiles)
@@ -156,11 +154,12 @@ class RummikubPPOEnv:
         cand_feats = np.zeros((self.max_candidates, 104), dtype=np.float32)
         mask = np.zeros(self.max_candidates + 1, dtype=np.float32)
 
-        for i, candidate in enumerate(self.last_candidates):
-            sim_env = copy.deepcopy(self.env)
-            sim_env.apply_solution(candidate)
-            next_hand = self.tiles_to_vector(sim_env.hand)
-            next_table = self.tiles_to_vector(flatten(sim_env.table_sets))
+        for i, result in enumerate(self.last_candidates):
+            next_hand = self.tiles_to_vector(result.remaining_hand)
+            next_table_tiles = []
+            for s in result.selected_sets:
+                next_table_tiles.extend(s.completed_tiles)
+            next_table = self.tiles_to_vector(next_table_tiles)
             cand_feats[i] = np.concatenate([next_hand, next_table]).astype(np.float32)
             mask[i] = 1.0
 
