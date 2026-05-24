@@ -1,4 +1,5 @@
 import copy
+from collections import Counter
 
 import numpy as np
 
@@ -9,7 +10,7 @@ from rummikub_solver import COLORS, flatten
 class RummikubPPOEnv:
     def __init__(
         self,
-        max_candidates=10,
+        max_candidates=20,
         max_turns=100,
         seed=None,
         ppo_player=0,
@@ -28,6 +29,7 @@ class RummikubPPOEnv:
         self.current_player = self.ppo_player
         self.hands = [[], []]
         self.last_candidates = []
+        self.opened = [False, False]
 
     def reset(self):
         self.env.reset(
@@ -50,6 +52,7 @@ class RummikubPPOEnv:
         self.turn_count = 0
         self.current_player = self.ppo_player
         self.last_candidates = []
+        self.opened = [False, False]
 
         self._sync_env_hand(self.ppo_player)
         return self.get_observation(self.ppo_player)
@@ -64,12 +67,19 @@ class RummikubPPOEnv:
         self._sync_env_hand(self.ppo_player)
         candidates = self.last_candidates
         if not candidates:
-            candidates = self.env.solve_candidate_moves(max_candidates=self.max_candidates)[: self.max_candidates]
+            candidates = self._generate_candidates_for_player(self.ppo_player)
             self.last_candidates = candidates
 
         if action < len(candidates):
             result = candidates[action]
-            self.env.apply_solution(result)
+            if (not self.opened[self.ppo_player]) and self._compute_hand_points_used(self.hands[self.ppo_player], result) < 30:
+                raise RuntimeError("invalid PPO move: initial meld must be at least 30 points")
+            if self.opened[self.ppo_player]:
+                self.env.apply_solution(result)
+            else:
+                self._apply_initial_meld(result)
+            if not self.opened[self.ppo_player]:
+                self.opened[self.ppo_player] = True
             reward += result.used_hand_tile_count
             if len(self.env.hand) == 0:
                 reward += 50.0
@@ -93,10 +103,21 @@ class RummikubPPOEnv:
 
         ilp_used_hand_tiles = 0
         ilp_done = False
-        ilp_result = self.env.solve_best_move()
+        ilp_result = None
+        if self.opened[self.ilp_player]:
+            ilp_result = self.env.solve_best_move()
+        else:
+            valid_candidates = self._generate_candidates_for_player(self.ilp_player)
+            if valid_candidates:
+                ilp_result = max(valid_candidates, key=lambda c: c.used_hand_tile_count)
 
-        if ilp_result.status == "Optimal" and ilp_result.used_hand_tile_count > 0:
-            self.env.apply_solution(ilp_result)
+        if ilp_result is not None and ilp_result.status == "Optimal" and ilp_result.used_hand_tile_count > 0:
+            if self.opened[self.ilp_player]:
+                self.env.apply_solution(ilp_result)
+            else:
+                self._apply_initial_meld(ilp_result)
+            if not self.opened[self.ilp_player]:
+                self.opened[self.ilp_player] = True
             ilp_used_hand_tiles = ilp_result.used_hand_tile_count
             if len(self.env.hand) == 0:
                 ilp_done = True
@@ -150,7 +171,7 @@ class RummikubPPOEnv:
             raise RuntimeError("get_policy_inputs() must be called on PPO player's turn.")
 
         self._sync_env_hand(self.ppo_player)
-        self.last_candidates = self.env.solve_candidate_moves(max_candidates=self.max_candidates)[: self.max_candidates]
+        self.last_candidates = self._generate_candidates_for_player(self.ppo_player)
 
         obs = self.get_observation(self.ppo_player)
         cand_feats = np.zeros((self.max_candidates, 104), dtype=np.float32)
@@ -158,7 +179,10 @@ class RummikubPPOEnv:
 
         for i, candidate in enumerate(self.last_candidates):
             sim_env = copy.deepcopy(self.env)
-            sim_env.apply_solution(candidate)
+            if self.opened[self.ppo_player]:
+                sim_env.apply_solution(candidate)
+            else:
+                self._apply_initial_meld_to_env(sim_env, candidate)
             next_hand = self.tiles_to_vector(sim_env.hand)
             next_table = self.tiles_to_vector(flatten(sim_env.table_sets))
             cand_feats[i] = np.concatenate([next_hand, next_table]).astype(np.float32)
@@ -166,6 +190,50 @@ class RummikubPPOEnv:
 
         mask[self.max_candidates] = 1.0
         return obs, cand_feats, mask
+
+    def _filter_candidates_for_player(self, player_id, candidates):
+        if self.opened[player_id]:
+            return candidates
+
+        hand_before = self.hands[player_id]
+        filtered = []
+        for candidate in candidates:
+            used_points = self._compute_hand_points_used(hand_before, candidate)
+            if used_points >= 30:
+                filtered.append(candidate)
+        return filtered
+
+    def _generate_candidates_for_player(self, player_id):
+        if self.opened[player_id]:
+            raw = self.env.solve_candidate_moves(max_candidates=self.max_candidates)[: self.max_candidates]
+            return raw
+
+        # First meld: generate candidates from hand only (no table tile usage).
+        raw = self.env.solver.solve_many(
+            hand_tiles=self.hands[player_id],
+            table_sets=[],
+            max_solutions=self.max_candidates,
+            require_use_at_least_one_hand_tile=True,
+        )[: self.max_candidates]
+        return self._filter_candidates_for_player(player_id, raw)
+
+    def _apply_initial_meld(self, result):
+        self._apply_initial_meld_to_env(self.env, result)
+
+    def _apply_initial_meld_to_env(self, target_env, result):
+        if result.status != "Optimal":
+            raise RuntimeError(f"cannot apply non-optimal initial meld: {result.status}")
+
+        existing_table = [list(tile_set) for tile_set in target_env.table_sets]
+        new_sets = [list(selected_set.completed_tiles) for selected_set in result.selected_sets]
+        target_env.table_sets = existing_table + new_sets
+        target_env.hand = list(result.remaining_hand)
+
+    def _compute_hand_points_used(self, hand_before, result):
+        before_counter = Counter(hand_before)
+        after_counter = Counter(result.remaining_hand)
+        used_counter = before_counter - after_counter
+        return sum(tile.number * count for tile, count in used_counter.items())
 
     def _sync_env_hand(self, player_id):
         self.env.hand = list(self.hands[player_id])

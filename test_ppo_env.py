@@ -5,7 +5,7 @@ from ppo_env import RummikubPPOEnv
 
 def main():
     env = RummikubPPOEnv(
-        max_candidates=10,
+        max_candidates=20,
         max_turns=30,
         seed=42,
     )

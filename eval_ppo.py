@@ -1,17 +1,16 @@
 import torch
+import time
 
 from ppo_env import RummikubPPOEnv
 from ppo_model import ActorCritic
 
 
-def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123):
+def evaluate(model_path="rummikub_ppo_model.pt", episodes=20, seed=123):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     state_dict = torch.load(model_path, map_location=device)
 
-    # Infer max_candidates from draw-inclusive actor output size.
-    # score_head last layer is candidate scorer, not fixed action head, so use default here.
-    max_candidates = 10
+    max_candidates = 20 
     max_turns = 100
     obs_dim = 52 + 52 + 1
     cand_feat_dim = 52 + 52
@@ -33,8 +32,10 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123):
     wins = 0
     total_reward = 0.0
     total_steps = 0
+    start_time = time.time()
 
     for _ in range(episodes):
+        episode_idx = _ + 1
         env.reset()
         obs, cand_feats, mask = env.get_policy_inputs()
         done = False
@@ -66,6 +67,16 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123):
 
         total_reward += episode_reward
         total_steps += steps
+        elapsed = time.time() - start_time
+        avg_time_per_ep = elapsed / episode_idx
+        eta = avg_time_per_ep * (episodes - episode_idx)
+        print(
+            f"[eval] episode={episode_idx}/{episodes}, "
+            f"episode_reward={episode_reward:.2f}, "
+            f"steps={steps}, "
+            f"elapsed={elapsed:.1f}s, "
+            f"eta={eta:.1f}s"
+        )
 
     print(f"episodes={episodes}")
     print(f"win_rate={wins / episodes:.3f}")

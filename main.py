@@ -57,7 +57,7 @@ def main():
     print("\nInitial state")
     env.render()
 
-    results = env.solve_candidate_moves(max_candidates=10)
+    results = env.solve_candidate_moves(max_candidates=20)
 
     print_candidate_results(results)
 

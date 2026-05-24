@@ -7,7 +7,7 @@ from ppo_model import ActorCritic
 
 def main():
     env = RummikubPPOEnv(
-        max_candidates=10,
+        max_candidates=20,
         max_turns=30,
         seed=42,
     )
@@ -18,7 +18,7 @@ def main():
     model = ActorCritic(
         obs_dim=105,
         cand_feat_dim=104,
-        max_candidates=10,
+        max_candidates=20,
     )
 
     obs_tensor = torch.tensor(obs, dtype=torch.float32)

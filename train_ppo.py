@@ -26,7 +26,7 @@ def compute_gae(rewards, values, dones, last_value, gamma=0.99, gae_lambda=0.95)
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    max_candidates = 10
+    max_candidates = 20
     max_turns = 100
 
     env = RummikubPPOEnv(
@@ -48,9 +48,9 @@ def train():
     optimizer = Adam(model.parameters(), lr=3e-4)
 
     n_steps = 100
-    total_updates = 2
+    total_updates = 30
     batch_size = 5
-    ppo_epochs = 2
+    ppo_epochs = 3
 
     gamma = 0.99
     gae_lambda = 0.95
@@ -72,8 +72,11 @@ def train():
         mask_list = []
 
         episode_rewards = []
+        episode_lengths = []
         current_episode_reward = 0.0
+        current_episode_steps = 0
         info = None
+        draw_count = 0
 
         for _ in range(n_steps):
             obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
@@ -84,6 +87,8 @@ def train():
                 action, log_prob, _, value = model.act(obs_tensor, cand_tensor, mask_tensor)
 
             action_int = action.item()
+            if action_int == max_candidates:
+                draw_count += 1
             next_obs, reward, done, info = env.step(action_int)
 
             obs_list.append(obs)
@@ -96,10 +101,13 @@ def train():
             mask_list.append(action_mask)
 
             current_episode_reward += reward
+            current_episode_steps += 1
 
             if done:
                 episode_rewards.append(current_episode_reward)
+                episode_lengths.append(current_episode_steps)
                 current_episode_reward = 0.0
+                current_episode_steps = 0
                 env.reset()
 
             obs, cand_feats, action_mask = env.get_policy_inputs()
@@ -130,6 +138,10 @@ def train():
 
         data_size = n_steps
         indices = np.arange(data_size)
+        actor_losses = []
+        critic_losses = []
+        entropy_values = []
+        total_losses = []
 
         for _ in range(ppo_epochs):
             np.random.shuffle(indices)
@@ -162,12 +174,26 @@ def train():
                 entropy_loss = entropy.mean()
 
                 loss = actor_loss + value_coef * critic_loss - entropy_coef * entropy_loss
+                actor_losses.append(actor_loss.item())
+                critic_losses.append(critic_loss.item())
+                entropy_values.append(entropy_loss.item())
+                total_losses.append(loss.item())
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
         avg_reward = sum(episode_rewards) / len(episode_rewards) if episode_rewards else current_episode_reward
+        avg_episode_turns = (
+            sum(episode_lengths) / len(episode_lengths)
+            if episode_lengths
+            else float(current_episode_steps)
+        )
+        draw_rate = draw_count / float(n_steps)
+        avg_actor_loss = sum(actor_losses) / len(actor_losses) if actor_losses else 0.0
+        avg_critic_loss = sum(critic_losses) / len(critic_losses) if critic_losses else 0.0
+        avg_entropy = sum(entropy_values) / len(entropy_values) if entropy_values else 0.0
+        avg_total_loss = sum(total_losses) / len(total_losses) if total_losses else 0.0
 
         if info is None:
             info = {
@@ -180,10 +206,13 @@ def train():
         print(
             f"update={update + 1}, "
             f"avg_episode_reward={avg_reward:.2f}, "
-            f"ppo_hand_count={info['ppo_hand_count']}, "
-            f"ilp_hand_count={info['ilp_hand_count']}, "
-            f"last_deck_count={info['deck_count']}, "
-            f"candidate_count={info['candidate_count']}"
+            f"avg_episode_turns={avg_episode_turns:.2f}, "
+            f"draw_count={draw_count}, "
+            f"draw_rate={draw_rate:.2f}, "
+            f"actor_loss={avg_actor_loss:.4f}, "
+            f"critic_loss={avg_critic_loss:.4f}, "
+            f"entropy={avg_entropy:.4f}, "
+            f"total_loss={avg_total_loss:.4f}"
         )
 
         if (update + 1) % 10 == 0:
