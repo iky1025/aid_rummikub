@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 
 from rummikub_env import RummikubEnv
@@ -60,11 +62,10 @@ class RummikubPPOEnv:
         reward = 0.0
 
         self._sync_env_hand(self.ppo_player)
-        if not self.last_candidates:
-            self.last_candidates = self.env.solve_candidate_moves(
-                max_candidates=self.max_candidates
-            )[: self.max_candidates]
         candidates = self.last_candidates
+        if not candidates:
+            candidates = self.env.solve_candidate_moves(max_candidates=self.max_candidates)[: self.max_candidates]
+            self.last_candidates = candidates
 
         if action < len(candidates):
             result = candidates[action]
@@ -139,32 +140,32 @@ class RummikubPPOEnv:
         hand_vector = self.tiles_to_vector(self.hands[player_id])
         table_tiles = flatten(self.env.table_sets)
         table_vector = self.tiles_to_vector(table_tiles)
-        deck_count = np.array([len(self.env.deck) / 106.0], dtype=np.float32)
+        deck_count = np.array([len(self.env.deck) / 104.0], dtype=np.float32)
 
-        obs = np.concatenate(
-            [
-                hand_vector,
-                table_vector,
-                deck_count,
-            ]
-        )
+        obs = np.concatenate([hand_vector, table_vector, deck_count])
         return obs.astype(np.float32)
 
-    def get_action_mask(self):
+    def get_policy_inputs(self):
         if self.current_player != self.ppo_player:
-            raise RuntimeError("get_action_mask() must be called on PPO player's turn.")
+            raise RuntimeError("get_policy_inputs() must be called on PPO player's turn.")
 
         self._sync_env_hand(self.ppo_player)
-        self.last_candidates = self.env.solve_candidate_moves(
-            max_candidates=self.max_candidates
-        )[: self.max_candidates]
+        self.last_candidates = self.env.solve_candidate_moves(max_candidates=self.max_candidates)[: self.max_candidates]
 
+        obs = self.get_observation(self.ppo_player)
+        cand_feats = np.zeros((self.max_candidates, 104), dtype=np.float32)
         mask = np.zeros(self.max_candidates + 1, dtype=np.float32)
-        for i in range(len(self.last_candidates)):
+
+        for i, candidate in enumerate(self.last_candidates):
+            sim_env = copy.deepcopy(self.env)
+            sim_env.apply_solution(candidate)
+            next_hand = self.tiles_to_vector(sim_env.hand)
+            next_table = self.tiles_to_vector(flatten(sim_env.table_sets))
+            cand_feats[i] = np.concatenate([next_hand, next_table]).astype(np.float32)
             mask[i] = 1.0
 
         mask[self.max_candidates] = 1.0
-        return mask
+        return obs, cand_feats, mask
 
     def _sync_env_hand(self, player_id):
         self.env.hand = list(self.hands[player_id])
@@ -179,16 +180,10 @@ class RummikubPPOEnv:
         }
 
     def tiles_to_vector(self, tiles):
-        vector = np.zeros(53, dtype=np.float32)
+        vector = np.zeros(52, dtype=np.float32)
         for tile in tiles:
-            index = self.tile_to_index(tile)
+            color_index = COLORS.index(tile.color)
+            number_index = tile.number - 1
+            index = color_index * 13 + number_index
             vector[index] += 1.0
-        vector = vector / 2.0
-        return vector
-
-    def tile_to_index(self, tile):
-        if tile.is_joker:
-            return 52
-        color_index = COLORS.index(tile.color)
-        number_index = tile.number - 1
-        return color_index * 13 + number_index
+        return vector / 2.0

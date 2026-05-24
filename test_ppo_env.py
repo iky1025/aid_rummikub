@@ -11,8 +11,10 @@ def main():
     )
 
     obs = env.reset()
+    obs, cand_feats, mask = env.get_policy_inputs()
 
     print("initial observation shape:", obs.shape)
+    print("initial candidate feature shape:", cand_feats.shape)
     print("initial state:")
     env.env.render()
 
@@ -21,8 +23,6 @@ def main():
     step_count = 0
 
     while not done:
-        mask = env.get_action_mask()
-
         valid_actions = np.where(mask == 1)[0]
         action = np.random.choice(valid_actions)
 
@@ -40,6 +40,9 @@ def main():
         print("observation shape:", obs.shape)
 
         env.env.render()
+
+        if not done:
+            obs, cand_feats, mask = env.get_policy_inputs()
 
     print("\n=== episode finished ===")
     print("total steps:", step_count)

@@ -5,13 +5,11 @@ from rummikub_env import RummikubEnv
 def input_table_sets():
     table_sets = []
 
-    print("\n테이블 세트를 한 줄에 하나씩 입력하세요.")
-    print("예: R3 R4 R5")
-    print("테이블이 비어 있으면 그냥 Enter를 누르세요.")
-    print("입력을 끝내려면 빈 줄을 누르세요.")
+    print("\nEnter table sets one line at a time. Example: R3 R4 R5")
+    print("Press Enter on an empty line to finish input.")
 
     while True:
-        line = input("테이블 세트 입력: ").strip()
+        line = input("table set: ").strip()
 
         if line == "":
             break
@@ -22,32 +20,30 @@ def input_table_sets():
 
 
 def print_candidate_results(results):
-    print("\n=== 여러 ILP 후보 ===")
+    print("\n=== ILP candidates ===")
 
     if not results:
-        print("후보 없음")
+        print("no candidates")
         return
 
     for i, result in enumerate(results):
-        print(f"\n--- 후보 {i} ---")
-        print("새로 사용한 손패 타일 수:", result.used_hand_tile_count)
+        print(f"\n--- candidate {i} ---")
+        print("used hand tiles:", result.used_hand_tile_count)
 
-        print("선택된 세트:")
+        print("selected sets:")
         for j, tile_set in enumerate(result.selected_sets):
             print(f"  {j}: {tile_set}")
 
         if result.remaining_hand:
             from rummikub_solver import format_tiles
-            print("남은 손패:", format_tiles(result.remaining_hand))
+            print("remaining hand:", format_tiles(result.remaining_hand))
         else:
-            print("남은 손패: 없음")
+            print("remaining hand: empty")
 
 
 def main():
-    print("=== 루미큐브 환경 + ILP Solver ===")
-    print("게임 시작 시 랜덤으로 손패 14장을 받습니다.")
-    print("타일 표기 예: R1 B13 Y7 K10 J")
-    print("색상: R, B, Y, K / 조커: J")
+    print("=== Rummikub Env + ILP Solver (No Joker) ===")
+    print("Input format example: R1 B13 Y7 K10")
 
     table_sets = input_table_sets()
 
@@ -58,7 +54,7 @@ def main():
         shuffle=True,
     )
 
-    print("\n초기 상태")
+    print("\nInitial state")
     env.render()
 
     results = env.solve_candidate_moves(max_candidates=10)
@@ -66,7 +62,7 @@ def main():
     print_candidate_results(results)
 
     if results:
-        answer = input("\n몇 번 후보를 적용할까요? 적용하지 않으려면 Enter: ").strip()
+        answer = input("\napply candidate index? (empty to skip): ").strip()
 
         if answer != "":
             index = int(answer)
@@ -74,14 +70,14 @@ def main():
             if 0 <= index < len(results):
                 env.apply_solution(results[index])
 
-                print("\n적용 후 상태")
+                print("\nState after apply")
                 env.render()
             else:
-                print("잘못된 후보 번호입니다.")
+                print("invalid candidate index")
         else:
-            print("아무 후보도 적용하지 않았습니다.")
+            print("no candidate applied")
     else:
-        print("\n낼 수 있는 손패 조합이 없습니다.")
+        print("\nNo playable candidate from current hand.")
 
 
 if __name__ == "__main__":

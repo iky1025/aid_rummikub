@@ -14,19 +14,12 @@ def compute_gae(rewards, values, dones, last_value, gamma=0.99, gae_lambda=0.95)
     values = values + [last_value]
 
     for step in reversed(range(len(rewards))):
-        if dones[step]:
-            next_non_terminal = 0.0
-        else:
-            next_non_terminal = 1.0
-
+        next_non_terminal = 0.0 if dones[step] else 1.0
         delta = rewards[step] + gamma * values[step + 1] * next_non_terminal - values[step]
         gae = delta + gamma * gae_lambda * next_non_terminal * gae
         advantages.insert(0, gae)
 
-    returns = []
-    for adv, value in zip(advantages, values[:-1]):
-        returns.append(adv + value)
-
+    returns = [adv + value for adv, value in zip(advantages, values[:-1])]
     return advantages, returns
 
 
@@ -42,18 +35,20 @@ def train():
         seed=42,
     )
 
-    obs_dim = 53 + 53 + 1
+    obs_dim = 52 + 52 + 1
+    cand_feat_dim = 52 + 52
     action_dim = max_candidates + 1
 
     model = ActorCritic(
         obs_dim=obs_dim,
-        action_dim=action_dim,
+        cand_feat_dim=cand_feat_dim,
+        max_candidates=max_candidates,
     ).to(device)
 
     optimizer = Adam(model.parameters(), lr=3e-4)
- 
+
     n_steps = 100
-    total_updates = 10
+    total_updates = 2
     batch_size = 5
     ppo_epochs = 2
 
@@ -63,10 +58,12 @@ def train():
     value_coef = 0.5
     entropy_coef = 0.01
 
-    obs = env.reset()
+    env.reset()
+    obs, cand_feats, action_mask = env.get_policy_inputs()
 
     for update in range(total_updates):
         obs_list = []
+        cand_feat_list = []
         action_list = []
         reward_list = []
         done_list = []
@@ -76,23 +73,21 @@ def train():
 
         episode_rewards = []
         current_episode_reward = 0.0
+        info = None
 
         for _ in range(n_steps):
-            action_mask = env.get_action_mask()
-
             obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
+            cand_tensor = torch.tensor(cand_feats, dtype=torch.float32, device=device)
             mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=device)
 
             with torch.no_grad():
-                action, log_prob, _, value = model.act(
-                    obs_tensor,
-                    mask_tensor,
-                )
+                action, log_prob, _, value = model.act(obs_tensor, cand_tensor, mask_tensor)
 
             action_int = action.item()
             next_obs, reward, done, info = env.step(action_int)
 
             obs_list.append(obs)
+            cand_feat_list.append(cand_feats)
             action_list.append(action_int)
             reward_list.append(reward)
             done_list.append(done)
@@ -105,15 +100,14 @@ def train():
             if done:
                 episode_rewards.append(current_episode_reward)
                 current_episode_reward = 0.0
-                obs = env.reset()
-            else:
-                obs = next_obs
+                env.reset()
 
-        last_obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
+            obs, cand_feats, action_mask = env.get_policy_inputs()
+
+        last_obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
 
         with torch.no_grad():
-            _, last_value_tensor = model.forward(last_obs_tensor)
-            last_value = last_value_tensor.squeeze(-1).item()
+            last_value = model.forward_value(last_obs_tensor).item()
 
         advantages, returns = compute_gae(
             rewards=reward_list,
@@ -125,15 +119,14 @@ def train():
         )
 
         obs_tensor = torch.tensor(np.array(obs_list), dtype=torch.float32, device=device)
+        cand_tensor = torch.tensor(np.array(cand_feat_list), dtype=torch.float32, device=device)
         actions_tensor = torch.tensor(action_list, dtype=torch.long, device=device)
         old_log_probs_tensor = torch.tensor(log_prob_list, dtype=torch.float32, device=device)
         returns_tensor = torch.tensor(returns, dtype=torch.float32, device=device)
         advantages_tensor = torch.tensor(advantages, dtype=torch.float32, device=device)
         masks_tensor = torch.tensor(np.array(mask_list), dtype=torch.float32, device=device)
 
-        advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (
-            advantages_tensor.std() + 1e-8
-        )
+        advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
 
         data_size = n_steps
         indices = np.arange(data_size)
@@ -146,6 +139,7 @@ def train():
                 batch_indices = indices[start:end]
 
                 batch_obs = obs_tensor[batch_indices]
+                batch_cands = cand_tensor[batch_indices]
                 batch_actions = actions_tensor[batch_indices]
                 batch_old_log_probs = old_log_probs_tensor[batch_indices]
                 batch_returns = returns_tensor[batch_indices]
@@ -154,18 +148,14 @@ def train():
 
                 new_log_probs, entropy, values = model.evaluate_actions(
                     batch_obs,
+                    batch_cands,
                     batch_actions,
                     batch_masks,
                 )
 
                 ratio = torch.exp(new_log_probs - batch_old_log_probs)
-
                 unclipped_loss = ratio * batch_advantages
-                clipped_loss = torch.clamp(
-                    ratio,
-                    1.0 - clip_range,
-                    1.0 + clip_range,
-                ) * batch_advantages
+                clipped_loss = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range) * batch_advantages
 
                 actor_loss = -torch.min(unclipped_loss, clipped_loss).mean()
                 critic_loss = F.mse_loss(values, batch_returns)
@@ -177,10 +167,15 @@ def train():
                 loss.backward()
                 optimizer.step()
 
-        if len(episode_rewards) > 0:
-            avg_reward = sum(episode_rewards) / len(episode_rewards)
-        else:
-            avg_reward = current_episode_reward
+        avg_reward = sum(episode_rewards) / len(episode_rewards) if episode_rewards else current_episode_reward
+
+        if info is None:
+            info = {
+                "ppo_hand_count": len(env.hands[env.ppo_player]),
+                "ilp_hand_count": len(env.hands[env.ilp_player]),
+                "deck_count": len(env.env.deck),
+                "candidate_count": 0,
+            }
 
         print(
             f"update={update + 1}, "

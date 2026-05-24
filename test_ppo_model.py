@@ -12,23 +12,27 @@ def main():
         seed=42,
     )
 
-    obs = env.reset()
-    mask = env.get_action_mask()
+    env.reset()
+    obs, cand_feats, mask = env.get_policy_inputs()
 
     model = ActorCritic(
-        obs_dim=107,
-        action_dim=11,
+        obs_dim=105,
+        cand_feat_dim=104,
+        max_candidates=10,
     )
 
     obs_tensor = torch.tensor(obs, dtype=torch.float32)
+    cand_tensor = torch.tensor(cand_feats, dtype=torch.float32)
     mask_tensor = torch.tensor(mask, dtype=torch.float32)
 
     action, log_prob, entropy, value = model.act(
         obs_tensor,
+        cand_tensor,
         mask_tensor,
     )
 
     print("obs shape:", obs_tensor.shape)
+    print("cand_feats shape:", cand_tensor.shape)
     print("mask:", mask)
     print("action:", action.item())
     print("log_prob:", log_prob.item())
