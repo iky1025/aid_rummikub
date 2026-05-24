@@ -1,3 +1,4 @@
+import argparse
 import csv
 import os
 import time
@@ -6,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.optim import Adam
+from torch.optim.lr_scheduler import LinearLR
 
 from ppo_env import RummikubPPOEnv
 from ppo_model import ActorCritic
@@ -27,7 +29,7 @@ def compute_gae(rewards, values, dones, last_value, gamma=0.99, gae_lambda=0.95)
     return advantages, returns
 
 
-def train():
+def train(args):
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -36,7 +38,7 @@ def train():
         device = torch.device("cpu")
     print(f"using device: {device}")
 
-    seed = 42
+    seed = args.seed
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -59,21 +61,43 @@ def train():
         max_candidates=max_candidates,
     ).to(device)
 
-    optimizer = Adam(model.parameters(), lr=3e-4)
+    if args.resume:
+        print(f"resuming from: {args.resume}")
+        state_dict = torch.load(args.resume, map_location=device, weights_only=True)
+        model.load_state_dict(state_dict)
 
-    n_steps = 512
-    total_updates = 50
-    batch_size = 64
-    ppo_epochs = 4
-    save_every = 10
-    model_path = "rummikub_ppo_model.pt"
-    log_path = "train_log.csv"
+    optimizer = Adam(model.parameters(), lr=args.lr_init)
+
+    n_steps = args.n_steps
+    total_updates = args.total_updates
+    batch_size = args.batch_size
+    ppo_epochs = args.ppo_epochs
+    save_every = args.save_every
+
+    suffix = f"_{args.tag}" if args.tag else ""
+    model_path = f"rummikub_ppo_model{suffix}.pt"
+    best_path = f"rummikub_ppo_best{suffix}.pt"
+    log_path = f"train_log{suffix}.csv"
 
     gamma = 0.99
     gae_lambda = 0.95
-    clip_range = 0.2
+    clip_range = args.clip_range
     value_coef = 0.1
     entropy_coef = 0.01
+
+    lr_scheduler = LinearLR(
+        optimizer,
+        start_factor=1.0,
+        end_factor=args.lr_final / args.lr_init,
+        total_iters=total_updates,
+    )
+
+    print(
+        f"config: n_steps={n_steps} total_updates={total_updates} "
+        f"batch_size={batch_size} ppo_epochs={ppo_epochs} "
+        f"lr={args.lr_init}->{args.lr_final} clip={clip_range}"
+    )
+    print(f"output: {model_path}, {best_path}, {log_path}")
 
     log_file = open(log_path, "w", newline="")
     log_writer = csv.writer(log_file)
@@ -83,7 +107,7 @@ def train():
         "avg_episode_reward", "avg_episode_length",
         "draw_action_ratio", "avg_candidate_count",
         "actor_loss", "critic_loss", "entropy",
-        "best_avg_reward",
+        "lr", "best_avg_reward",
     ])
 
     best_avg_reward = -float("inf")
@@ -242,9 +266,12 @@ def train():
         avg_entropy = entropy_sum / max(1, update_steps)
         elapsed = time.time() - train_start
 
+        current_lr = lr_scheduler.get_last_lr()[0]
+        lr_scheduler.step()
+
         if avg_reward > best_avg_reward:
             best_avg_reward = avg_reward
-            torch.save(model.state_dict(), f"rummikub_ppo_best.pt")
+            torch.save(model.state_dict(), best_path)
 
         print(
             f"upd={update + 1:3d}/{total_updates} "
@@ -253,7 +280,7 @@ def train():
             f"rew={avg_reward:7.2f} len={avg_length:5.1f} "
             f"draw={draw_ratio:.2f} cand={avg_candidate_count:4.1f} "
             f"a={avg_actor_loss:+.3f} c={avg_critic_loss:.3f} ent={avg_entropy:.3f} "
-            f"best={best_avg_reward:7.2f}"
+            f"lr={current_lr:.1e} best={best_avg_reward:7.2f}"
         )
 
         log_writer.writerow([
@@ -262,7 +289,7 @@ def train():
             f"{avg_reward:.3f}", f"{avg_length:.2f}",
             f"{draw_ratio:.3f}", f"{avg_candidate_count:.2f}",
             f"{avg_actor_loss:.4f}", f"{avg_critic_loss:.4f}", f"{avg_entropy:.4f}",
-            f"{best_avg_reward:.3f}",
+            f"{current_lr:.2e}", f"{best_avg_reward:.3f}",
         ])
         log_file.flush()
 
@@ -271,8 +298,36 @@ def train():
             print(f"  saved: {model_path}")
 
     log_file.close()
-    print(f"\ndone. log: {log_path}, model: {model_path}, best: rummikub_ppo_best.pt")
+    print(f"\ndone. log: {log_path}, model: {model_path}, best: {best_path}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", type=str, default=None,
+                        help="path to a model checkpoint to resume from")
+    parser.add_argument("--n-steps", type=int, default=1024,
+                        help="rollout steps per update")
+    parser.add_argument("--total-updates", type=int, default=100,
+                        help="total number of PPO updates")
+    parser.add_argument("--batch-size", type=int, default=128,
+                        help="minibatch size for PPO update")
+    parser.add_argument("--ppo-epochs", type=int, default=4,
+                        help="number of PPO epochs per update")
+    parser.add_argument("--save-every", type=int, default=10,
+                        help="save model_path every N updates")
+    parser.add_argument("--lr-init", type=float, default=3e-4,
+                        help="initial learning rate")
+    parser.add_argument("--lr-final", type=float, default=3e-5,
+                        help="final learning rate after LinearLR schedule")
+    parser.add_argument("--clip-range", type=float, default=0.1,
+                        help="PPO clip range")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="random seed for env, torch, numpy")
+    parser.add_argument("--tag", type=str, default="",
+                        help="suffix for output files (model/best/log)")
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    train()
+    args = parse_args()
+    train(args)

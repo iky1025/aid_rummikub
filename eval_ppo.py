@@ -18,7 +18,7 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
     print(f"model: {model_path}")
     print(f"episodes: {episodes}, seed: {seed}, mode: {'stochastic' if stochastic else 'deterministic'}")
 
-    state_dict = torch.load(model_path, map_location=device)
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
 
     max_candidates = 10
     max_turns = 100

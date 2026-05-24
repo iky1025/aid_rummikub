@@ -85,6 +85,7 @@ class RummikubPPOEnv:
 
         self.hands[self.ppo_player] = list(self.env.hand)
         reward -= 0.01
+        reward -= 0.02 * len(self.hands[self.ppo_player])
 
         self.current_player = self.ilp_player
         self._sync_env_hand(self.ilp_player)
