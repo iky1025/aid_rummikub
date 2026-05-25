@@ -30,6 +30,7 @@ class ActorCritic(nn.Module):
         )
 
         self.draw_head = nn.Linear(128, 1)
+        nn.init.constant_(self.draw_head.bias, -2.0)
         self.critic = nn.Linear(128, 1)
 
     def forward_actor(self, obs, cand_feats):

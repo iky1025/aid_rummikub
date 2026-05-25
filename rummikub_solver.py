@@ -231,7 +231,7 @@ class RummikubILPSolver:
 
         problem += used_hand_tile_expr
 
-        result_status = problem.solve(pulp.COIN_CMD(msg=False))
+        result_status = problem.solve(pulp.COIN_CMD(msg=False, threads=1))
         status = pulp.LpStatus[result_status]
 
         selected_sets = []

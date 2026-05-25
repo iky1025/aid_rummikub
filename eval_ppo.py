@@ -22,7 +22,7 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
 
     max_candidates = 10
     max_turns = 100
-    obs_dim = 52 + 52 + 1
+    obs_dim = 52 + 52 + 1 + 1
     cand_feat_dim = 52 + 52
 
     env = RummikubPPOEnv(
@@ -45,28 +45,36 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
     total_reward = 0.0
     total_steps = 0
     draw_actions = 0
+    forced_draw_actions = 0
     total_actions = 0
+    win_margins = []        # from wins only
+    loss_margins = []       # from losses only
+    net_scores = []         # all episodes (win_m - loss_m)
 
     t0 = time.time()
 
     for ep in range(episodes):
-        env.reset()
-        obs, cand_feats, mask = env.get_policy_inputs()
+        obs_dict, _ = env.reset(seed=seed + ep)
         done = False
         episode_reward = 0.0
         steps = 0
         final_info = None
         ep_draw = 0
+        ep_forced_draw = 0
 
         while not done:
-            obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
-            cand_tensor = torch.tensor(cand_feats, dtype=torch.float32, device=device)
-            mask_tensor = torch.tensor(mask, dtype=torch.float32, device=device)
+            state = obs_dict["state"]
+            cand_feats = obs_dict["cand_feats"]
+            mask = obs_dict["mask"]
+
+            state_t = torch.tensor(state, dtype=torch.float32, device=device)
+            cand_t = torch.tensor(cand_feats, dtype=torch.float32, device=device)
+            mask_t = torch.tensor(mask, dtype=torch.float32, device=device)
 
             with torch.no_grad():
-                logits = model.forward_actor(obs_tensor.unsqueeze(0), cand_tensor.unsqueeze(0)).squeeze(0)
+                logits = model.forward_actor(state_t.unsqueeze(0), cand_t.unsqueeze(0)).squeeze(0)
                 masked_logits = logits.clone()
-                masked_logits[mask_tensor == 0] = -1e9
+                masked_logits[mask_t == 0] = -1e9
 
                 if stochastic:
                     probs = torch.softmax(masked_logits, dim=-1)
@@ -74,29 +82,38 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
                 else:
                     action = torch.argmax(masked_logits).item()
 
+            n_valid_candidates = int(mask[:max_candidates].sum())
             if action == max_candidates:
                 ep_draw += 1
+                if n_valid_candidates == 0:
+                    ep_forced_draw += 1
 
-            _, reward, done, info = env.step(action)
+            obs_dict, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             episode_reward += reward
             steps += 1
             final_info = info
 
-            if not done:
-                obs, cand_feats, mask = env.get_policy_inputs()
-
         total_actions += steps
         draw_actions += ep_draw
+        forced_draw_actions += ep_forced_draw
 
-        if final_info is not None and final_info["ppo_hand_count"] == 0:
+        outcome_flag = final_info.get("outcome") if final_info is not None else None
+        win_m = int(final_info.get("win_margin", 0)) if final_info else 0
+        loss_m = int(final_info.get("loss_margin", 0)) if final_info else 0
+
+        if outcome_flag == "win":
             wins += 1
             outcome = "W"
-        elif final_info is not None and final_info["ilp_hand_count"] == 0:
+            win_margins.append(win_m)
+        elif outcome_flag == "loss":
             losses += 1
             outcome = "L"
+            loss_margins.append(loss_m)
         else:
             timeouts += 1
             outcome = "T"
+        net_scores.append(win_m - loss_m)
 
         total_reward += episode_reward
         total_steps += steps
@@ -105,22 +122,34 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
             print(
                 f"ep={ep + 1:3d}/{episodes} "
                 f"outcome={outcome} steps={steps:3d} "
-                f"reward={episode_reward:+6.2f} draw_ratio={ep_draw / steps:.2f} "
+                f"reward={episode_reward:+6.2f} "
+                f"draw={ep_draw / steps:.2f}(f={ep_forced_draw / steps:.2f}) "
                 f"ppo_hand={final_info['ppo_hand_count']:2d} "
                 f"ilp_hand={final_info['ilp_hand_count']:2d}"
             )
 
     elapsed = time.time() - t0
 
+    avg_win_margin = sum(win_margins) / len(win_margins) if win_margins else 0.0
+    avg_loss_margin = sum(loss_margins) / len(loss_margins) if loss_margins else 0.0
+    expected_score = sum(net_scores) / episodes if episodes else 0.0
+    forced_ratio = forced_draw_actions / total_actions
+    chosen_ratio = draw_actions / total_actions - forced_ratio
+
     print("\n=== result ===")
-    print(f"episodes      : {episodes}")
-    print(f"wins          : {wins} ({wins / episodes:.1%})")
-    print(f"losses        : {losses} ({losses / episodes:.1%})")
-    print(f"timeouts      : {timeouts} ({timeouts / episodes:.1%})")
-    print(f"avg_reward    : {total_reward / episodes:+.3f}")
-    print(f"avg_steps     : {total_steps / episodes:.2f}")
-    print(f"draw_ratio    : {draw_actions / total_actions:.3f}")
-    print(f"elapsed       : {elapsed:.1f}s ({elapsed / episodes:.2f}s/ep)")
+    print(f"episodes        : {episodes}")
+    print(f"wins            : {wins} ({wins / episodes:.1%})")
+    print(f"  avg margin    : {avg_win_margin:.2f} (opponent tiles left)")
+    print(f"losses          : {losses} ({losses / episodes:.1%})")
+    print(f"  avg margin    : {avg_loss_margin:.2f} (own tiles left)")
+    print(f"timeouts        : {timeouts} ({timeouts / episodes:.1%})")
+    print(f"expected_score  : {expected_score:+.3f}  (win_m_sum - loss_m_sum) / eps")
+    print(f"avg_reward      : {total_reward / episodes:+.3f}")
+    print(f"avg_steps       : {total_steps / episodes:.2f}")
+    print(f"draw_ratio      : {draw_actions / total_actions:.3f}")
+    print(f"  forced        : {forced_ratio:.3f}")
+    print(f"  chosen        : {chosen_ratio:.3f}")
+    print(f"elapsed         : {elapsed:.1f}s ({elapsed / episodes:.2f}s/ep)")
 
 
 if __name__ == "__main__":

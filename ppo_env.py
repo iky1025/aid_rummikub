@@ -1,10 +1,29 @@
+import gymnasium as gym
 import numpy as np
+from gymnasium import spaces
 
 from rummikub_env import RummikubEnv
 from rummikub_solver import COLORS, flatten
 
 
-class RummikubPPOEnv:
+STATE_DIM = 52 + 52 + 1 + 1
+CAND_FEAT_DIM = 52 + 52
+
+
+class RummikubPPOEnv(gym.Env):
+    """
+    Gymnasium-compatible PPO env where the opponent is a greedy ILP solver.
+
+    Observation is a Dict with:
+      - state:      current hand/table/deck encoding, shape (STATE_DIM,)
+      - cand_feats: per-candidate next-state features, shape (max_candidates, CAND_FEAT_DIM)
+      - mask:       valid action mask, shape (max_candidates + 1,)
+
+    Action space is Discrete(max_candidates + 1): last index is "draw".
+    """
+
+    metadata = {"render_modes": []}
+
     def __init__(
         self,
         max_candidates=10,
@@ -12,26 +31,45 @@ class RummikubPPOEnv:
         seed=None,
         ppo_player=0,
     ):
+        super().__init__()
         self.max_candidates = max_candidates
         self.max_turns = max_turns
         self.ppo_player = ppo_player
         self.ilp_player = 1 - ppo_player
+        self._init_seed = seed
 
         self.env = RummikubEnv(
             seed=seed,
             hand_size=14,
         )
 
+        self.observation_space = spaces.Dict({
+            "state": spaces.Box(
+                low=0.0, high=10.0, shape=(STATE_DIM,), dtype=np.float32,
+            ),
+            "cand_feats": spaces.Box(
+                low=0.0, high=10.0,
+                shape=(self.max_candidates, CAND_FEAT_DIM), dtype=np.float32,
+            ),
+            "mask": spaces.Box(
+                low=0.0, high=1.0,
+                shape=(self.max_candidates + 1,), dtype=np.float32,
+            ),
+        })
+        self.action_space = spaces.Discrete(self.max_candidates + 1)
+
         self.turn_count = 0
         self.current_player = self.ppo_player
         self.hands = [[], []]
         self.last_candidates = []
+        self._last_candidate_count = 0
 
-    def reset(self):
-        self.env.reset(
-            table_sets=[],
-            shuffle=True,
-        )
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        if seed is not None:
+            self.env = RummikubEnv(seed=seed, hand_size=14)
+
+        self.env.reset(table_sets=[], shuffle=True)
 
         first_hand = list(self.env.hand)
         second_hand = []
@@ -49,8 +87,9 @@ class RummikubPPOEnv:
         self.current_player = self.ppo_player
         self.last_candidates = []
 
-        self._sync_env_hand(self.ppo_player)
-        return self.get_observation(self.ppo_player)
+        obs = self._compute_obs()
+        info = self._build_info(self._last_candidate_count, 0)
+        return obs, info
 
     def step(self, action):
         if self.current_player != self.ppo_player:
@@ -62,7 +101,9 @@ class RummikubPPOEnv:
         self._sync_env_hand(self.ppo_player)
         candidates = self.last_candidates
         if not candidates:
-            candidates = self.env.solve_candidate_moves(max_candidates=self.max_candidates)[: self.max_candidates]
+            candidates = self.env.solve_candidate_moves(
+                max_candidates=self.max_candidates
+            )[: self.max_candidates]
             self.last_candidates = candidates
 
         if action < len(candidates):
@@ -70,12 +111,16 @@ class RummikubPPOEnv:
             self.env.apply_solution(result)
             reward += 0.1 * result.used_hand_tile_count
             if len(self.env.hand) == 0:
-                reward += 5.0
+                ilp_remaining = len(self.hands[self.ilp_player])
+                reward += 5.0 + 0.3 * ilp_remaining
                 self.hands[self.ppo_player] = list(self.env.hand)
                 self.last_candidates = []
-                obs = self.get_observation(self.ppo_player)
+                obs = self._compute_obs()
                 info = self._build_info(len(candidates), 0)
-                return obs, reward, True, info
+                info["outcome"] = "win"
+                info["win_margin"] = ilp_remaining
+                info["loss_margin"] = 0
+                return obs, reward, True, False, info
         else:
             drawn_tile = self.env.draw_tile()
             if drawn_tile is None:
@@ -85,7 +130,6 @@ class RummikubPPOEnv:
 
         self.hands[self.ppo_player] = list(self.env.hand)
         reward -= 0.01
-        reward -= 0.02 * len(self.hands[self.ppo_player])
 
         self.current_player = self.ilp_player
         self._sync_env_hand(self.ilp_player)
@@ -108,51 +152,54 @@ class RummikubPPOEnv:
             reward -= 0.02 * ilp_used_hand_tiles
 
         if ilp_done:
-            reward -= 5.0
+            ppo_remaining = len(self.hands[self.ppo_player])
+            reward -= 5.0 + 0.3 * ppo_remaining
             self.last_candidates = []
-            obs = self.get_observation(self.ppo_player)
+            obs = self._compute_obs()
             info = self._build_info(len(candidates), ilp_used_hand_tiles)
-            return obs, reward, True, info
+            info["outcome"] = "loss"
+            info["win_margin"] = 0
+            info["loss_margin"] = ppo_remaining
+            return obs, reward, True, False, info
 
         self.current_player = self.ppo_player
         self._sync_env_hand(self.ppo_player)
         self.last_candidates = []
 
-        done = self.is_done()
-        obs = self.get_observation(self.ppo_player)
-        info = self._build_info(len(candidates), ilp_used_hand_tiles)
-        return obs, reward, done, info
+        truncated = self.turn_count >= self.max_turns
+        terminated = False
 
-    def is_done(self):
-        if len(self.hands[self.ppo_player]) == 0:
-            return True
-        if len(self.hands[self.ilp_player]) == 0:
-            return True
-        if self.turn_count >= self.max_turns:
-            return True
-        return False
+        obs = self._compute_obs()
+        info = self._build_info(self._last_candidate_count, ilp_used_hand_tiles)
+        if truncated:
+            ppo_remaining = len(self.hands[self.ppo_player])
+            ilp_remaining = len(self.hands[self.ilp_player])
+            reward += 0.3 * (ilp_remaining - ppo_remaining)
+            info["outcome"] = "timeout"
+            info["win_margin"] = max(0, ilp_remaining - ppo_remaining)
+            info["loss_margin"] = max(0, ppo_remaining - ilp_remaining)
+        return obs, reward, terminated, truncated, info
 
-    def get_observation(self, player_id=None):
-        if player_id is None:
-            player_id = self.ppo_player
+    def _compute_obs(self):
+        """Compute the full Dict observation. Triggers ILP candidate generation."""
+        self._sync_env_hand(self.ppo_player)
+        self.last_candidates = self.env.solve_candidate_moves(
+            max_candidates=self.max_candidates
+        )[: self.max_candidates]
+        self._last_candidate_count = len(self.last_candidates)
 
-        hand_vector = self.tiles_to_vector(self.hands[player_id])
+        hand_vector = self.tiles_to_vector(self.hands[self.ppo_player])
         table_tiles = flatten(self.env.table_sets)
         table_vector = self.tiles_to_vector(table_tiles)
         deck_count = np.array([len(self.env.deck) / 104.0], dtype=np.float32)
+        ilp_hand_norm = np.array(
+            [len(self.hands[self.ilp_player]) / 14.0], dtype=np.float32,
+        )
+        state = np.concatenate(
+            [hand_vector, table_vector, deck_count, ilp_hand_norm]
+        ).astype(np.float32)
 
-        obs = np.concatenate([hand_vector, table_vector, deck_count])
-        return obs.astype(np.float32)
-
-    def get_policy_inputs(self):
-        if self.current_player != self.ppo_player:
-            raise RuntimeError("get_policy_inputs() must be called on PPO player's turn.")
-
-        self._sync_env_hand(self.ppo_player)
-        self.last_candidates = self.env.solve_candidate_moves(max_candidates=self.max_candidates)[: self.max_candidates]
-
-        obs = self.get_observation(self.ppo_player)
-        cand_feats = np.zeros((self.max_candidates, 104), dtype=np.float32)
+        cand_feats = np.zeros((self.max_candidates, CAND_FEAT_DIM), dtype=np.float32)
         mask = np.zeros(self.max_candidates + 1, dtype=np.float32)
 
         for i, result in enumerate(self.last_candidates):
@@ -165,7 +212,8 @@ class RummikubPPOEnv:
             mask[i] = 1.0
 
         mask[self.max_candidates] = 1.0
-        return obs, cand_feats, mask
+
+        return {"state": state, "cand_feats": cand_feats, "mask": mask}
 
     def _sync_env_hand(self, player_id):
         self.env.hand = list(self.hands[player_id])
