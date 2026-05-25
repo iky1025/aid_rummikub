@@ -171,6 +171,8 @@ class RummikubILPSolver:
         table_sets=None,
         require_use_at_least_one_hand_tile=False,
         excluded_solutions=None,
+        max_hand_tiles_used=None,
+        exact_hand_tiles_used=None,
     ):
         if table_sets is None:
             table_sets = []
@@ -225,6 +227,12 @@ class RummikubILPSolver:
         if require_use_at_least_one_hand_tile:
             problem += used_hand_tile_expr >= 1
 
+        if max_hand_tiles_used is not None:
+            problem += used_hand_tile_expr <= max_hand_tiles_used
+
+        if exact_hand_tiles_used is not None:
+            problem += used_hand_tile_expr == exact_hand_tiles_used
+
         for excluded in excluded_solutions:
             if len(excluded) > 0:
                 problem += pulp.lpSum(x[i] for i in excluded) <= len(excluded) - 1
@@ -273,32 +281,76 @@ class RummikubILPSolver:
         self,
         hand_tiles,
         table_sets=None,
-        max_solutions=10,
+        max_solutions=20,
         require_use_at_least_one_hand_tile=True,
     ):
+        """Generate diverse candidate solutions in two phases.
+
+        Phase 1 (tile-count diversification): for each k from max_k down to 1,
+        find the best play that uses exactly k hand tiles. This captures the
+        "how many to play" strategic dimension explicitly — the policy can
+        choose to play fewer tiles to preserve options for later turns.
+
+        Phase 2 (tile-selection diversification): fill remaining slots with
+        alternative solutions via exclusion constraints. These give different
+        ways to achieve the same tile counts.
+        """
         if table_sets is None:
             table_sets = []
 
         results = []
-        excluded_solutions = []
+        seen_indices = set()
 
-        for _ in range(max_solutions):
-            result = self.solve(
+        # Phase 1: find max possible tile count
+        first = self.solve(
+            hand_tiles=hand_tiles,
+            table_sets=table_sets,
+            require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
+        )
+        if first.status != "Optimal" or first.used_hand_tile_count <= 0:
+            return []
+
+        max_k = first.used_hand_tile_count
+        results.append(first)
+        seen_indices.add(tuple(first.selected_indices))
+
+        # Phase 1: best play for each tile count (max_k - 1 down to 1)
+        for target_k in range(max_k - 1, 0, -1):
+            if len(results) >= max_solutions:
+                break
+            r = self.solve(
                 hand_tiles=hand_tiles,
                 table_sets=table_sets,
                 require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
-                excluded_solutions=excluded_solutions,
+                exact_hand_tiles_used=target_k,
             )
+            if r.status != "Optimal" or r.used_hand_tile_count <= 0:
+                continue
+            key = tuple(r.selected_indices)
+            if key in seen_indices:
+                continue
+            results.append(r)
+            seen_indices.add(key)
 
-            if result.status != "Optimal":
+        # Phase 2: fill remaining slots with alternative solutions
+        # (max objective with exclusion to find different tile-selection variants)
+        excluded = [list(r.selected_indices) for r in results]
+        while len(results) < max_solutions:
+            r = self.solve(
+                hand_tiles=hand_tiles,
+                table_sets=table_sets,
+                require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
+                excluded_solutions=excluded,
+            )
+            if r.status != "Optimal" or r.used_hand_tile_count <= 0:
                 break
-            if result.used_hand_tile_count <= 0:
-                break
-            if len(result.selected_indices) == 0:
-                break
-
-            results.append(result)
-            excluded_solutions.append(result.selected_indices)
+            key = tuple(r.selected_indices)
+            if key in seen_indices:
+                excluded.append(list(r.selected_indices))
+                continue
+            results.append(r)
+            seen_indices.add(key)
+            excluded.append(list(r.selected_indices))
 
         return results
 

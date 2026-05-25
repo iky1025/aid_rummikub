@@ -1,3 +1,5 @@
+import random
+
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -12,7 +14,14 @@ CAND_FEAT_DIM = 52 + 52
 
 class RummikubPPOEnv(gym.Env):
     """
-    Gymnasium-compatible PPO env where the opponent is a greedy ILP solver.
+    Gymnasium-compatible PPO env.
+
+    The opponent type is configurable via `opponent` arg:
+      - "ilp"    (default): greedy ILP solver, always plays max tiles when possible
+      - "random": uniformly picks among valid candidates and draw
+
+    The opponent's randomness uses a separate RNG seeded by `seed`, so PPO's
+    own randomness doesn't perturb opponent decisions.
 
     Observation is a Dict with:
       - state:      current hand/table/deck encoding, shape (STATE_DIM,)
@@ -26,10 +35,11 @@ class RummikubPPOEnv(gym.Env):
 
     def __init__(
         self,
-        max_candidates=10,
+        max_candidates=20,
         max_turns=100,
         seed=None,
         ppo_player=0,
+        opponent="ilp",
     ):
         super().__init__()
         self.max_candidates = max_candidates
@@ -37,6 +47,12 @@ class RummikubPPOEnv(gym.Env):
         self.ppo_player = ppo_player
         self.ilp_player = 1 - ppo_player
         self._init_seed = seed
+        assert opponent in ("ilp", "random"), f"unknown opponent: {opponent}"
+        self.opponent_type = opponent
+        # separate RNG so opponent randomness doesn't perturb env shuffles
+        self.opponent_random = random.Random(
+            seed if seed is not None else 0
+        )
 
         self.env = RummikubEnv(
             seed=seed,
@@ -68,6 +84,7 @@ class RummikubPPOEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self.env = RummikubEnv(seed=seed, hand_size=14)
+            self.opponent_random = random.Random(seed)
 
         self.env.reset(table_sets=[], shuffle=True)
 
@@ -136,15 +153,31 @@ class RummikubPPOEnv(gym.Env):
 
         ilp_used_hand_tiles = 0
         ilp_done = False
-        ilp_result = self.env.solve_best_move()
 
-        if ilp_result.status == "Optimal" and ilp_result.used_hand_tile_count > 0:
-            self.env.apply_solution(ilp_result)
-            ilp_used_hand_tiles = ilp_result.used_hand_tile_count
-            if len(self.env.hand) == 0:
-                ilp_done = True
-        else:
-            self.env.draw_tile()
+        if self.opponent_type == "ilp":
+            ilp_result = self.env.solve_best_move()
+            if ilp_result.status == "Optimal" and ilp_result.used_hand_tile_count > 0:
+                self.env.apply_solution(ilp_result)
+                ilp_used_hand_tiles = ilp_result.used_hand_tile_count
+                if len(self.env.hand) == 0:
+                    ilp_done = True
+            else:
+                self.env.draw_tile()
+        else:  # random opponent
+            opp_candidates = self.env.solve_candidate_moves(
+                max_candidates=self.max_candidates
+            )
+            # action space: pick one of opp_candidates, or draw (index = len)
+            n_opt = len(opp_candidates)
+            choice = self.opponent_random.randint(0, n_opt)
+            if choice < n_opt:
+                picked = opp_candidates[choice]
+                self.env.apply_solution(picked)
+                ilp_used_hand_tiles = picked.used_hand_tile_count
+                if len(self.env.hand) == 0:
+                    ilp_done = True
+            else:
+                self.env.draw_tile()
 
         self.hands[self.ilp_player] = list(self.env.hand)
 

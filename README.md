@@ -98,16 +98,51 @@ train_ppo.py / eval_ppo.py
 
 → **매 턴 손패를 최대한 많이 내는 그리디 ILP**.
 
-### 3.4 다중 해 생성 (`solve_many`)
+### 3.4 다중 해 생성 (`solve_many`) — R6에서 다양화
 
-PPO에게 후보를 N개 주기 위해 사용
+**문제 (R5까지)**: 목적함수가 `max used_hand_tile_count`로 고정. exclusion으로 반복 풀면 결과가 **거의 다 max-play 변형** (같은 7장을 다른 방식으로 내는 후보들). 전략적 다양성 부족.
 
-1. ILP로 최적해 1개 찾음
-2. "이 해를 제외" 제약 추가: `Σx_i ≤ |selected|-1` (선택된 후보 중 하나는 빠져야 함)
-3. 다시 ILP 풀기 → 같은 최적값을 가지는 대안 해 또는 차선해 반환
-4. 최대 N=10번 반복
+**해결 (R6, D')**: 2-Phase 다양화
 
-### 3.5 솔버 선택
+```
+Phase 1: tile-count 다양화
+  - max_k 발견 (예: 7장 가능)
+  - 각 k ∈ [max_k, max_k-1, ..., 1]에 대해 best 솔루션 찾기
+  - exact_hand_tiles_used=k 제약 사용
+  - 결과: 7장, 6장, 5장, ..., 1장 내기 후보 각 1개씩 (가능한 경우만)
+
+Phase 2: tile-selection 다양화
+  - 남는 슬롯을 max-play 변형으로 채움 (R5 방식)
+  - exclusion constraint로 다른 조합 찾기
+```
+
+**예시 — seed=10 t=0**
+
+| Phase | tile_count | 후보 수 |
+|---|---|---|
+| Phase 1 | 7 (max) | 1 |
+| Phase 1 | 6 | 1 |
+| Phase 1 | 5 | 0 (infeasible) |
+| Phase 1 | 4 | 1 |
+| Phase 1 | 3 | 1 |
+| Phase 1 | 2 | 0 |
+| Phase 1 | 1 | 0 |
+| Phase 2 | 추가 6장 | 1 |
+| Phase 2 | 추가 3장 | 2 |
+| **합계** | **7개** | dist={7:1, 6:2, 4:1, 3:3} |
+
+이전 R5라면 7개 후보가 모두 "7장 내기 변형 A/B/C/..." — 전략적으로 거의 같음. R6는 명시적으로 **"덜 내고 보존"** 옵션을 강제 생성.
+
+### 3.5 솔버 파라미터 (R6 업데이트)
+
+`solve()` 새 파라미터
+
+- `max_hand_tiles_used`: `used_hand_tile_expr <= k` 제약 추가
+- `exact_hand_tiles_used`: `used_hand_tile_expr == k` 제약 추가
+
+이 둘로 "정확히 k장 내기" 또는 "최대 k장까지 내기" 제어 가능. `solve_many` Phase 1에서 활용.
+
+### 3.6 솔버 선택
 
 - PuLP의 `COIN_CMD(threads=1)` 사용
 - conda-forge의 pulp에는 PULP_CBC_CMD가 번들되지 않아 conda-installed `cbc` 바이너리를 PATH에서 자동 인식
@@ -124,8 +159,8 @@ gymnasium.Env 호환. SubprocVecEnv에 들어가서 멀티프로세스로 실행
 ```python
 observation_space = spaces.Dict({
     "state":      Box(0, 10, shape=(106,)),       # 내 손패/테이블/덱/상대패
-    "cand_feats": Box(0, 10, shape=(10, 104)),    # 후보별 next-state
-    "mask":       Box(0, 1, shape=(11,)),         # 유효 action 마스크
+    "cand_feats": Box(0, 10, shape=(20, 104)),    # 후보별 next-state (R6: 10→20)
+    "mask":       Box(0, 1, shape=(21,)),         # 유효 action 마스크 (R6: 11→21)
 })
 ```
 
@@ -138,22 +173,23 @@ observation_space = spaces.Dict({
 | `[104:105]` | 1 | 덱 잔여 비율 (deck_count / 104) |
 | `[105:106]` | 1 | 상대 손패 수 정규화 (ilp_hand / 14) |
 
-**`cand_feats`** (10 × 104) — 각 후보를 적용한 다음 상태
+**`cand_feats`** (20 × 104) — 각 후보를 적용한 다음 상태 (R6: max_candidates 10→20)
 
 | 슬라이스 | 차원 | 의미 |
 |---|---|---|
 | `[i, 0:52]` | 52 | 후보 i 적용 후의 내 손패 |
 | `[i, 52:104]` | 52 | 후보 i 적용 후의 테이블 |
 
-후보가 10개 미만이면 0으로 패딩 (mask로 무효 표시).
+후보가 20개 미만이면 0으로 패딩 (mask로 무효 표시).
 
-**`mask`** (11차원) — 유효한 액션은 1, 무효는 0
-- `mask[0:10]`: 후보 슬롯
-- `mask[10]`: "드로우" 액션 (항상 1)
+**`mask`** (21차원) — 유효한 액션은 1, 무효는 0
+
+- `mask[0:20]`: 후보 슬롯
+- `mask[20]`: "드로우" 액션 (항상 1)
 
 ### 4.2 Action Space
 
-`Discrete(11)`. 인덱스 0~9는 후보, 10은 드로우.
+`Discrete(21)`. 인덱스 0~19는 후보, 20은 드로우. (R6: 11→21)
 
 ### 4.3 환경 인터페이스 (gymnasium 표준)
 
@@ -354,14 +390,36 @@ upd= 10/100 t= 980s steps=12800 eps=31 W/L/T=14/17/0 rew= -4.20 len=41.2
 
 ## 7. 평가 (`eval_ppo.py`)
 
-### 7.1 모드
+### 7.1 PPO 정책 모드
 
-- **Deterministic (argmax)**: 매 상태에서 logit 최대 액션. 실제 배포 시 기준 성능
+- **Deterministic (argmax)** (기본): 매 상태에서 logit 최대 액션. 실제 배포 기준
 - **Stochastic (sample)**: 분포에서 샘플. 학습 분포 그대로 검증
+- **PPO Random** (`--ppo-random`): PPO가 랜덤. Sanity check ("학습한 게 있긴 한가?")
+
+### 7.1.2 상대 (Opponent) 선택
+
+- **`--opponent ilp`** (기본): 그리디 ILP. 매 턴 최적해 적용. 강한 상대
+- **`--opponent random`**: 균등 랜덤. 후보 + 드로우 중 무작위. 약한 상대 (baseline)
+
+### 7.1.3 비교 모드
+
+- **`--compare-opponents`**: PPO를 ILP/Random 두 상대 모두에 대해 평가 후 표로 비교
 
 ```bash
+# 기본: PPO(det) vs ILP
 python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100
+
+# PPO(stoch) vs ILP
 python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100 --stochastic
+
+# PPO(det) vs Random 상대
+python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100 --opponent random
+
+# 두 상대 비교 ★
+python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100 --compare-opponents
+
+# Sanity check: PPO 자체도 랜덤
+python eval_ppo.py --ppo-random --episodes 100
 ```
 
 ### 7.2 지표 (R5 업데이트)
@@ -390,6 +448,26 @@ draw_ratio      : 0.53
 
 → 승률 48%여도 expected_score = +1.61로 양수면 "잘 이기고 잘 진다" — 강한 정책.
 → forced=0.50, chosen=0.03이면 드로우의 대부분은 게임 구조상 불가피함.
+
+### 7.2.2 상대 비교 모드 출력 예시
+
+```text
+metric                 |     det/vs_ilp |  det/vs_random
+─────────────────────────────────────────────────────────
+win_rate               |          50.0% |          85.0%
+loss_rate              |          50.0% |          15.0%
+expected_score         |         +0.500 |         +5.300
+avg_steps              |          42.00 |          50.00
+draw_ratio             |          0.520 |          0.510
+  chosen               |          0.030 |          0.020
+```
+
+**해석 기준**
+
+- `vs_ilp` 승률 (PPO의 진짜 실력 측정)
+- `vs_random` 승률 (학습이 의미 있는지 sanity)
+- 둘의 차이: ILP가 얼마나 강한지 (보통 35-40%p 차이가 정상)
+- 만약 `vs_random` 승률이 50% 근처면 → 학습 자체 실패 ⚠️
 
 ### 7.3 표본 크기 권장
 
@@ -534,7 +612,8 @@ python main.py
 | R2 | LR schedule, clip 0.1, 손패 페널티 | best -10.4 (upd 46), 평가 46%/55% | n_steps↑ |
 | R3 | n_steps=1024 | 시간 4.5시간, plateau ~47% | VecEnv |
 | R4 | SubprocVecEnv (10 envs) | 학습 2배 빠름, 30 ep/update, 100판 평가 49%/52% (det/stoch) | 보상 재설계 |
-| **R5 (현재)** | 상대 패 obs, draw bias=-2.0, margin 보상, per-turn 손패 페널티 제거, forced/chosen draw 분리 측정 | 진행 예정 | 결과 분석 후 결정 |
+| R5 | 상대 패 obs, draw bias=-2.0, margin 보상, per-turn 손패 페널티 제거 | 40 updates 정체 (best -6.5 upd 10), chosen_draw→0, es≈0 | 후보 다양성 부족 진단 |
+| **R6 (현재)** | tile-count 다양화 (Phase 1: 각 k별 best, Phase 2: variant), max_candidates 10→20 | 진행 예정 | 결과 분석 후 결정 |
 
 ### R5에서 측정으로 검증된 발견 ⭐
 
@@ -559,6 +638,82 @@ upd 2: draw=0.54(f=0.52 c=0.02) wm=4.0 lm=1.0 es=+2.12
 - R5에서 `expected_score` 측정으로 "잘 이기고 잘 진다"를 정량화
 - 작은 표본(4-8 게임)에서도 `es=+2.25`로 정책의 강함이 보임
 - 향후 라운드 간 비교는 `es`를 1순위로 봐야 함
+
+### R6에서 측정으로 검증된 발견 ⭐
+
+**핵심 진단 (R5 정체 분석)**
+
+R5의 정체 원인 측정으로 확인:
+
+- `solve_many`의 모든 10개 후보가 max-play 변형 (사실상 같은 전략)
+- PPO 입장에서 "이 7장 vs 저 7장" 선택만 가능
+- "덜 내고 보존" 전략은 **표현 자체 불가**
+
+**솔루션 측정 (`measure_solutions.py`, 414 positions, 10 games)**
+
+```text
+solution 분포:
+  0 solutions:    55%  (forced draw, 게임 본질)
+  1-4 solutions:  26%
+  5-9 solutions:   5%
+  10-19:           4%
+  20-49:           3%
+  50-99:           2%
+  100+ (capped):   5%
+```
+
+평균 ILP 호출 시간: 142ms (예상 7ms의 20배). p99 enum: 23초.
+
+**90% 위치는 ≤20 solutions로 커버**. 다만 그 20 solutions 중 대부분이 max-play 변형 → user 통찰
+
+**R6 다양화 검증 (smoke test)**
+
+예: seed=10 t=0, hand=14
+
+```text
+R5 (이전): 7개 후보 모두 7장 내기 변형 (dist={7:7})
+R6 (현재): 7개 후보 = {7:1, 6:2, 4:1, 3:3} (tile_count 다양화)
+```
+
+이제 PPO에게 진짜 전략적 선택지 제공:
+- "7장 내고 압승 모드"
+- "6장 내고 1장 보관"
+- "3장만 내고 4장 보관" (수비적)
+- "드로우"
+
+### R6의 알려진 우려 사항 / 검증 필요 항목
+
+#### 1. 학습 시간 증가
+
+- ILP 호출: 약 10 → 약 15-20회/턴 (Phase 1 시도 + Phase 2 보충)
+- update당 시간: 100s → ~150s 예상
+- 100 updates 총 시간: 3시간 → 4-5시간
+
+#### 2. ML 효율성
+
+- max_candidates 10 → 20
+- update당 30 episodes × 40 turns = 1200 결정을 21개 action에 분산
+- action당 평균 ~57 visits (수용 가능)
+- 단 학습 신호 노이즈 약간 ↑
+
+#### 3. exact_hand_tiles_used 제약의 실현 가능성
+
+- 어떤 k는 infeasible (예: hand+table로 정확히 5장 내는 게 불가능)
+- Phase 1이 모든 k를 채우진 못함
+- 측정에서 본 dist={7:1, 6:2, 4:1, 3:3} — k=5, 2, 1이 빠짐
+- 정상 (제약이 너무 엄격해서)
+
+#### 4. 정책이 reduced-play를 사용하는지
+
+- chosen_draw가 R5에서 0으로 수렴했듯이
+- R6의 "1장만 내기" 옵션도 학습 후 사용 안 될 가능성
+- 학습 결과의 tile_count 분포 측정 필요
+
+#### 5. 체크포인트 호환성
+
+- max_candidates 10 → 20, action space (11→21)
+- R5 best.pt는 R6 코드로 **로드 가능** (model architecture는 N-invariant)
+- 단 mask shape 다르므로 학습 재개 시 buffer shape 주의 필요
 
 ### R5의 알려진 우려 사항 / 검증 필요 항목
 

@@ -65,7 +65,7 @@ def train(args):
         vec_env = DummyVecEnv(env_fns)
     print(f"vec_env: {'SubprocVecEnv' if args.use_subproc else 'DummyVecEnv'} with {n_envs} envs")
 
-    max_candidates = 10
+    max_candidates = 20
     obs_dim = 52 + 52 + 1 + 1
     cand_feat_dim = 52 + 52
 

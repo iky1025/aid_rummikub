@@ -1,26 +1,63 @@
 import argparse
 import time
 
+import numpy as np
 import torch
 
 from ppo_env import RummikubPPOEnv
 from ppo_model import ActorCritic
 
 
-def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochastic=False, verbose=False):
+def select_action(
+    policy_mode,
+    state_t,
+    cand_t,
+    mask_t,
+    mask_np,
+    model=None,
+    rng=None,
+):
+    """Pick an action for the PPO player.
+
+    policy_mode in {'det', 'stoch', 'random'}.
+    """
+    if policy_mode == "random":
+        valid = np.flatnonzero(mask_np > 0)
+        return int(rng.choice(valid))
+
+    with torch.no_grad():
+        logits = model.forward_actor(
+            state_t.unsqueeze(0), cand_t.unsqueeze(0)
+        ).squeeze(0)
+        masked_logits = logits.clone()
+        masked_logits[mask_t == 0] = -1e9
+        if policy_mode == "stoch":
+            probs = torch.softmax(masked_logits, dim=-1)
+            return torch.multinomial(probs, num_samples=1).item()
+        return torch.argmax(masked_logits).item()
+
+
+def evaluate(
+    model_path="rummikub_ppo_best.pt",
+    episodes=50,
+    seed=123,
+    policy_mode="det",
+    opponent="ilp",
+    verbose=False,
+):
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    print(f"using device: {device}")
-    print(f"model: {model_path}")
-    print(f"episodes: {episodes}, seed: {seed}, mode: {'stochastic' if stochastic else 'deterministic'}")
+    print(f"\nusing device: {device}")
+    print(f"policy_mode: {policy_mode}  opponent: {opponent}")
+    if policy_mode != "random":
+        print(f"model: {model_path}")
+    print(f"episodes: {episodes}, seed: {seed}")
 
-    state_dict = torch.load(model_path, map_location=device, weights_only=True)
-
-    max_candidates = 10
+    max_candidates = 20
     max_turns = 100
     obs_dim = 52 + 52 + 1 + 1
     cand_feat_dim = 52 + 52
@@ -29,15 +66,22 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
         max_candidates=max_candidates,
         max_turns=max_turns,
         seed=seed,
+        opponent=opponent,
     )
 
-    model = ActorCritic(
-        obs_dim=obs_dim,
-        cand_feat_dim=cand_feat_dim,
-        max_candidates=max_candidates,
-    ).to(device)
-    model.load_state_dict(state_dict)
-    model.eval()
+    model = None
+    rng = None
+    if policy_mode == "random":
+        rng = np.random.default_rng(seed)
+    else:
+        state_dict = torch.load(model_path, map_location=device, weights_only=True)
+        model = ActorCritic(
+            obs_dim=obs_dim,
+            cand_feat_dim=cand_feat_dim,
+            max_candidates=max_candidates,
+        ).to(device)
+        model.load_state_dict(state_dict)
+        model.eval()
 
     wins = 0
     losses = 0
@@ -47,9 +91,9 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
     draw_actions = 0
     forced_draw_actions = 0
     total_actions = 0
-    win_margins = []        # from wins only
-    loss_margins = []       # from losses only
-    net_scores = []         # all episodes (win_m - loss_m)
+    win_margins = []
+    loss_margins = []
+    net_scores = []
 
     t0 = time.time()
 
@@ -71,16 +115,15 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
             cand_t = torch.tensor(cand_feats, dtype=torch.float32, device=device)
             mask_t = torch.tensor(mask, dtype=torch.float32, device=device)
 
-            with torch.no_grad():
-                logits = model.forward_actor(state_t.unsqueeze(0), cand_t.unsqueeze(0)).squeeze(0)
-                masked_logits = logits.clone()
-                masked_logits[mask_t == 0] = -1e9
-
-                if stochastic:
-                    probs = torch.softmax(masked_logits, dim=-1)
-                    action = torch.multinomial(probs, num_samples=1).item()
-                else:
-                    action = torch.argmax(masked_logits).item()
+            action = select_action(
+                policy_mode=policy_mode,
+                state_t=state_t,
+                cand_t=cand_t,
+                mask_t=mask_t,
+                mask_np=mask,
+                model=model,
+                rng=rng,
+            )
 
             n_valid_candidates = int(mask[:max_candidates].sum())
             if action == max_candidates:
@@ -125,7 +168,7 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
                 f"reward={episode_reward:+6.2f} "
                 f"draw={ep_draw / steps:.2f}(f={ep_forced_draw / steps:.2f}) "
                 f"ppo_hand={final_info['ppo_hand_count']:2d} "
-                f"ilp_hand={final_info['ilp_hand_count']:2d}"
+                f"opp_hand={final_info['ilp_hand_count']:2d}"
             )
 
     elapsed = time.time() - t0
@@ -136,7 +179,27 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
     forced_ratio = forced_draw_actions / total_actions
     chosen_ratio = draw_actions / total_actions - forced_ratio
 
+    result = {
+        "label": f"{policy_mode}/vs_{opponent}",
+        "policy_mode": policy_mode,
+        "opponent": opponent,
+        "episodes": episodes,
+        "wins": wins,
+        "losses": losses,
+        "timeouts": timeouts,
+        "avg_win_margin": avg_win_margin,
+        "avg_loss_margin": avg_loss_margin,
+        "expected_score": expected_score,
+        "avg_reward": total_reward / episodes,
+        "avg_steps": total_steps / episodes,
+        "draw_ratio": draw_actions / total_actions,
+        "forced_ratio": forced_ratio,
+        "chosen_ratio": chosen_ratio,
+        "elapsed": elapsed,
+    }
+
     print("\n=== result ===")
+    print(f"label           : {result['label']}")
     print(f"episodes        : {episodes}")
     print(f"wins            : {wins} ({wins / episodes:.1%})")
     print(f"  avg margin    : {avg_win_margin:.2f} (opponent tiles left)")
@@ -151,20 +214,82 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=50, seed=123, stochast
     print(f"  chosen        : {chosen_ratio:.3f}")
     print(f"elapsed         : {elapsed:.1f}s ({elapsed / episodes:.2f}s/ep)")
 
+    return result
+
+
+def compare_results(results):
+    if len(results) < 2:
+        return
+    print("\n" + "=" * 78)
+    print("=== comparison ===")
+    print("=" * 78)
+    headers = [r["label"] for r in results]
+    col_width = max(14, max(len(h) for h in headers))
+    print(f"{'metric':<22} | " + " | ".join(f"{h:>{col_width}}" for h in headers))
+    print("-" * (24 + (col_width + 3) * len(headers)))
+
+    def row(label, key, fmt):
+        cells = [fmt.format(r[key]) for r in results]
+        print(f"{label:<22} | " + " | ".join(f"{c:>{col_width}}" for c in cells))
+
+    def row_pct(label, key):
+        cells = [f"{r[key] / r['episodes']:.1%}" for r in results]
+        print(f"{label:<22} | " + " | ".join(f"{c:>{col_width}}" for c in cells))
+
+    row_pct("win_rate", "wins")
+    row_pct("loss_rate", "losses")
+    row_pct("timeout_rate", "timeouts")
+    row("avg_win_margin", "avg_win_margin", "{:.2f}")
+    row("avg_loss_margin", "avg_loss_margin", "{:.2f}")
+    row("expected_score", "expected_score", "{:+.3f}")
+    row("avg_reward", "avg_reward", "{:+.3f}")
+    row("avg_steps", "avg_steps", "{:.2f}")
+    row("draw_ratio", "draw_ratio", "{:.3f}")
+    row("  forced", "forced_ratio", "{:.3f}")
+    row("  chosen", "chosen_ratio", "{:.3f}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="rummikub_ppo_model.pt", help="path to model checkpoint")
-    parser.add_argument("--episodes", type=int, default=50, help="number of episodes")
-    parser.add_argument("--seed", type=int, default=123, help="env seed")
-    parser.add_argument("--stochastic", action="store_true", help="sample from policy instead of argmax")
-    parser.add_argument("--verbose", action="store_true", help="print per-episode result")
+    parser.add_argument("--model", default="rummikub_ppo_best.pt",
+                        help="path to model checkpoint")
+    parser.add_argument("--episodes", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--stochastic", action="store_true",
+                        help="PPO uses stochastic policy (sample from softmax)")
+    parser.add_argument("--ppo-random", action="store_true",
+                        help="PPO acts uniformly at random (sanity check)")
+    parser.add_argument("--opponent", choices=["ilp", "random"], default="ilp",
+                        help="opponent type: greedy ILP or uniform random")
+    parser.add_argument("--compare-opponents", action="store_true",
+                        help="run PPO vs ILP AND vs random opponent, print comparison")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    evaluate(
-        model_path=args.model,
-        episodes=args.episodes,
-        seed=args.seed,
-        stochastic=args.stochastic,
-        verbose=args.verbose,
-    )
+    if args.ppo_random:
+        policy_mode = "random"
+    elif args.stochastic:
+        policy_mode = "stoch"
+    else:
+        policy_mode = "det"
+
+    if args.compare_opponents:
+        opponents = ["ilp", "random"]
+    else:
+        opponents = [args.opponent]
+
+    results = []
+    for opp in opponents:
+        results.append(
+            evaluate(
+                model_path=args.model,
+                episodes=args.episodes,
+                seed=args.seed,
+                policy_mode=policy_mode,
+                opponent=opp,
+                verbose=args.verbose,
+            )
+        )
+
+    if len(results) > 1:
+        compare_results(results)
