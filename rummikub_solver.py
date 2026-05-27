@@ -173,7 +173,17 @@ class RummikubILPSolver:
         excluded_solutions=None,
         max_hand_tiles_used=None,
         exact_hand_tiles_used=None,
+        min_play_value=0,
+        ignore_table=False,
     ):
+        """Solve ILP for best play.
+
+        Special params for initial meld (Rummikub house rule):
+          - ignore_table: don't use existing table tiles (rearrangement disabled).
+                          Useful when player hasn't completed initial meld yet.
+          - min_play_value: minimum total tile-value of newly played tiles.
+                            Standard Rummikub initial meld threshold is 30.
+        """
         if table_sets is None:
             table_sets = []
 
@@ -184,10 +194,17 @@ class RummikubILPSolver:
             raise ValueError("table has invalid set(s).")
 
         hand_tiles = list(hand_tiles)
-        table_sets = [list(tile_set) for tile_set in table_sets]
+        original_table_sets = [list(tile_set) for tile_set in table_sets]
 
-        table_tiles = flatten(table_sets)
-        available_tiles = hand_tiles + table_tiles
+        if ignore_table:
+            # Initial-meld mode: don't touch existing table. Solve as if table is empty.
+            table_sets = []
+            table_tiles = []
+            available_tiles = hand_tiles
+        else:
+            table_sets = original_table_sets
+            table_tiles = flatten(table_sets)
+            available_tiles = hand_tiles + table_tiles
 
         table_counter = Counter(table_tiles)
         available_counter = Counter(available_tiles)
@@ -232,6 +249,17 @@ class RummikubILPSolver:
 
         if exact_hand_tiles_used is not None:
             problem += used_hand_tile_expr == exact_hand_tiles_used
+
+        if min_play_value > 0:
+            # Sum of tile-values of NEWLY played tiles (i.e., from hand).
+            # In ignore_table mode, available_tiles == hand_tiles, so all values count.
+            # Otherwise, subtract value of preserved-table tiles.
+            value_expr = pulp.lpSum(
+                sum(t.number for t in candidates[i].completed_tiles) * x[i]
+                for i in range(len(candidates))
+            )
+            table_value = sum(t.number for t in table_tiles)
+            problem += value_expr - table_value >= min_play_value
 
         for excluded in excluded_solutions:
             if len(excluded) > 0:
@@ -283,6 +311,8 @@ class RummikubILPSolver:
         table_sets=None,
         max_solutions=20,
         require_use_at_least_one_hand_tile=True,
+        min_play_value=0,
+        ignore_table=False,
     ):
         """Generate diverse candidate solutions in two phases.
 
@@ -306,6 +336,8 @@ class RummikubILPSolver:
             hand_tiles=hand_tiles,
             table_sets=table_sets,
             require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
+            min_play_value=min_play_value,
+            ignore_table=ignore_table,
         )
         if first.status != "Optimal" or first.used_hand_tile_count <= 0:
             return []
@@ -323,6 +355,8 @@ class RummikubILPSolver:
                 table_sets=table_sets,
                 require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
                 exact_hand_tiles_used=target_k,
+                min_play_value=min_play_value,
+                ignore_table=ignore_table,
             )
             if r.status != "Optimal" or r.used_hand_tile_count <= 0:
                 continue
@@ -341,6 +375,8 @@ class RummikubILPSolver:
                 table_sets=table_sets,
                 require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
                 excluded_solutions=excluded,
+                min_play_value=min_play_value,
+                ignore_table=ignore_table,
             )
             if r.status != "Optimal" or r.used_hand_tile_count <= 0:
                 break

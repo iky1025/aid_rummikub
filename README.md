@@ -42,6 +42,24 @@
 - 누군가의 손패가 0장이면 즉시 종료 (승/패 결정)
 - 또는 100턴 도달 시 타임아웃
 
+### 1.5 초기 등록 룰 (R7, 옵션)
+
+`initial_meld_value > 0`이면 활성화 (기본 30). 실제 루미큐브 규칙에 가깝게.
+
+- 각 플레이어는 첫 등록(meld) 전까지 **테이블 재배열 불가**
+- 첫 등록은 손패만으로 새 set(들)을 만들어 등록
+- 첫 등록의 타일 합계 (number 값 합) ≥ 30점 필요
+- 등록 완료 후엔 자유롭게 테이블 재배열 가능
+
+효과: 초반엔 양쪽 드로우 단계, 손패 모으기 전략 필요. 게임이 더 strategic.
+
+### 1.6 선공 교대 (R7, 옵션)
+
+`alternate_first_player=True`이면 게임마다 PPO의 위치(P0/P1)가 교대.
+
+- 학습 시: PPO가 두 위치 모두 학습 → robustness ↑
+- 평가 시: 같은 정책의 P0/P1 평균 성능 측정 가능
+
 ---
 
 ## 2. 코드 구조
@@ -164,7 +182,7 @@ observation_space = spaces.Dict({
 })
 ```
 
-**`state`** (106차원) — R5 적용
+**`state`** (108차원) — R7 적용
 
 | 슬라이스 | 차원 | 의미 |
 |---|---|---|
@@ -172,6 +190,8 @@ observation_space = spaces.Dict({
 | `[52:104]` | 52 | 테이블 전체 타일 카운트 벡터 |
 | `[104:105]` | 1 | 덱 잔여 비율 (deck_count / 104) |
 | `[105:106]` | 1 | 상대 손패 수 정규화 (ilp_hand / 14) |
+| `[106:107]` | 1 | 내 초기 등록 완료 플래그 (0/1) ← R7 |
+| `[107:108]` | 1 | 상대 초기 등록 완료 플래그 (0/1) ← R7 |
 
 **`cand_feats`** (20 × 104) — 각 후보를 적용한 다음 상태 (R6: max_candidates 10→20)
 
@@ -527,6 +547,26 @@ python train_ppo.py \
     --tag round1
 ```
 
+R7 (선공 교대 + 30점 초기 등록):
+
+```bash
+python train_ppo.py \
+    --alternate-first-player \
+    --initial-meld-value 30 \
+    --tag r7
+```
+
+R7 평가 (반드시 학습과 동일한 옵션):
+
+```bash
+python eval_ppo.py \
+    --model rummikub_ppo_best_r7.pt \
+    --alternate-first-player \
+    --initial-meld-value 30 \
+    --compare-opponents \
+    --episodes 100
+```
+
 체크포인트에서 이어서 (보수적 lr 권장)
 
 ```bash
@@ -612,8 +652,107 @@ python main.py
 | R2 | LR schedule, clip 0.1, 손패 페널티 | best -10.4 (upd 46), 평가 46%/55% | n_steps↑ |
 | R3 | n_steps=1024 | 시간 4.5시간, plateau ~47% | VecEnv |
 | R4 | SubprocVecEnv (10 envs) | 학습 2배 빠름, 30 ep/update, 100판 평가 49%/52% (det/stoch) | 보상 재설계 |
-| R5 | 상대 패 obs, draw bias=-2.0, margin 보상, per-turn 손패 페널티 제거 | 40 updates 정체 (best -6.5 upd 10), chosen_draw→0, es≈0 | 후보 다양성 부족 진단 |
-| **R6 (현재)** | tile-count 다양화 (Phase 1: 각 k별 best, Phase 2: variant), max_candidates 10→20 | 진행 예정 | 결과 분석 후 결정 |
+| R5 | 상대 패 obs, draw bias=-2.0, margin 보상, per-turn 손패 페널티 제거 | 40 updates 정체, chosen_draw→0, es≈0 | 후보 다양성 부족 진단 |
+| R6 | tile-count 다양화 (Phase 1+2), max_candidates 10→20 | 55 updates, win ~47%, es ~-0.3, best=-6.45 (upd 10 이후 정체) | benchmark 깊은 분석 |
+| **R7 (현재)** | 선공 교대 (alternate_first_player) + 30점 초기 등록 룰 (initial_meld_value=30) | 진행 예정 | 결과 분석 후 결정 |
+
+### R6 → R7 전환의 핵심 발견 (벤치마크 분석)
+
+R6 최종 평가에서 매우 충격적인 결과가 나타남
+
+```text
+PPO det vs ILP (100 ep):    43% 승리
+PPO det vs Random (100 ep): 40% 승리
+Random vs ILP (50 ep):      44% 승리
+Random vs Random (50 ep):   30% 승리 ← ?
+```
+
+#### 발견 1: 게임은 본질적으로 대칭
+
+`verify_symmetry.py`로 100판 random-random 시뮬레이션
+
+```text
+P0 wins      : 50 (50.0%)
+P1 wins      : 50 (50.0%)
+P0 win rate 95% CI: [40.2%, 59.8%]
+→ Cannot distinguish from symmetric play.
+```
+
+게임 자체는 50/50 대칭. R6 eval의 "Random vs Random 30%"는 **측정 artifact**였음 — eval의 PPO random은 `np.random.default_rng` 단일 스트림, opponent는 `random.Random` 매 episode 리셋. 두 RNG 타입/생명주기 비대칭이 통계 분포를 비틀어 30/70 만듦.
+
+#### 발견 2: PPO가 약하게 보수적
+
+각 정책의 play turn당 평균 낸 타일 수
+
+| 정책 | tiles/play |
+|---|---|
+| PPO det vs ILP | 1.66 |
+| Random vs ILP | 1.87 |
+| Random vs Random | 1.89 |
+
+PPO가 random 대비 약 10% 적게 냄. R5에서 매 턴 손패 페널티 제거 + margin 보상 도입이 정책을 약하게 보수적으로 만든 효과. dramatic하지는 않음.
+
+#### 발견 3: ILP greedy가 생각보다 강하지 않음
+
+Random vs ILP 44% / PPO vs ILP 43% — random과 PPO가 ILP 상대로 사실상 동등. ILP greedy의 myopia가 random 정도의 정책에도 견고하게 우위 못 가짐. PPO의 학습 향상은 제한적.
+
+#### R7 도입 동기
+
+게임은 대칭이지만 R7 두 변경이 여전히 가치 있음
+
+- **선공 교대 (alternate_first_player)**: PPO가 P0/P1 양쪽 위치를 학습. Robustness 향상. eval시 미묘한 RNG asymmetry artifact 회피
+- **30점 초기 등록 룰 (initial_meld_value=30)**: 게임을 더 strategic하게 만듦. 초반 드로우 페이즈, 패 보존 전략, 실제 루미큐브 룰 근접. PPO에게 진짜 학습할 차원 생김
+
+#### R7 룰 적용 대칭성 검증
+
+```text
+50 games random vs random + initial_meld_value=30:
+P0 wins: 24 (48.0%)
+P1 wins: 26 (52.0%)
+avg turns: 40.9 (vs 42.0 without 30-meld; comparable)
+→ Symmetric ✓
+```
+
+30점 룰 추가해도 게임 대칭성 유지. 게임 길이도 거의 동일 (40.9 vs 42.0).
+
+#### R7 새 지표: pre/post meld 드로우 분리
+
+R5/R6의 `chosen_draw`는 등록 전후를 구분 못 했음. 30점 룰 도입으로 의미 변화
+
+- **등록 전 forced draw**: 30+ 콤보 만들 수 없어 강제 드로우 — 게임 본질, 정책과 무관
+- **등록 후 forced draw**: 후보 0개로 어쩔 수 없는 드로우 — 게임 본질
+- **등록 후 chosen draw**: 후보 있지만 정책이 의도적으로 드로우 — **진짜 정책 결정**
+
+R7 학습 로그/평가 출력 예시
+
+```text
+draw=0.54(pre.f=0.10 pre.c=0.00 post.f=0.41 post.c=0.03) premeld=0.14
+```
+
+해석
+
+- 전체 드로우 54% 중
+- 10%는 등록 전 강제 (30+ 콤보 부재)
+- 0%는 등록 전 의도적 (드물게 의미 있는 strategic)
+- 41%는 등록 후 강제 (후보 부재)
+- **3%만이 등록 후 의도적 드로우** ← 정책의 진짜 strategic 행동
+- 14%는 어떤 형태로든 등록 전 단계 turn (드로우 + 등록 완성 play 포함)
+
+이전 R6의 `chosen=0.001`이 사실상 그대로지만, 의미가 더 정확. R7에서 정책이 등록 전 의도 드로우(pre.c) 또는 등록 후 의도 드로우(post.c)를 학습하는지 명확히 측정 가능.
+
+#### R7 환경 변경 요약 (코드)
+
+- `rummikub_solver.py`: `solve()`에 `min_play_value`, `ignore_table` 파라미터 추가
+- `rummikub_env.py`: `apply_solution(append_to_table=False)` 옵션 추가
+- `ppo_env.py`:
+  - `__init__`: `alternate_first_player`, `initial_meld_value` 파라미터
+  - `STATE_DIM`: 106 → 108 (meld_done flags 2개 추가)
+  - `_meld_params(player_id)`: 솔버 파라미터 헬퍼
+  - `_opponent_turn()`: opponent 한 턴을 별도 메서드로
+  - `reset()`: 알터네이션 + ppo_player=1이면 opponent 먼저 한 턴
+  - `step()`, `_compute_obs()`: meld 상태 기반 솔버 호출
+  - info dict에 `ppo_player` 추가
+- `train_ppo.py`, `eval_ppo.py`: CLI 옵션 `--alternate-first-player`, `--initial-meld-value`
 
 ### R5에서 측정으로 검증된 발견 ⭐
 

@@ -94,28 +94,45 @@ class RummikubEnv:
         self.hand.append(tile)
         return tile
 
-    def solve_best_move(self):
+    def solve_best_move(self, min_play_value=0, ignore_table=False):
         return self.solver.solve(
             hand_tiles=self.hand,
             table_sets=self.table_sets,
             require_use_at_least_one_hand_tile=False,
+            min_play_value=min_play_value,
+            ignore_table=ignore_table,
         )
 
-    def solve_candidate_moves(self, max_candidates=10):
+    def solve_candidate_moves(self, max_candidates=10, min_play_value=0, ignore_table=False):
         return self.solver.solve_many(
             hand_tiles=self.hand,
             table_sets=self.table_sets,
             max_solutions=max_candidates,
             require_use_at_least_one_hand_tile=True,
+            min_play_value=min_play_value,
+            ignore_table=ignore_table,
         )
 
-    def apply_solution(self, result):
+    def apply_solution(self, result, append_to_table=False):
+        """Apply ILP result.
+
+        append_to_table=False (default): replace table_sets entirely with the
+        new arrangement (allowed because table tiles can be rearranged).
+
+        append_to_table=True: keep existing table_sets and ADD the new sets.
+        Used for initial-meld plays where the solver was run with
+        ignore_table=True, so the result's selected_sets are NEW sets only.
+        """
         if result.status != "Optimal":
             raise RuntimeError(f"cannot apply non-optimal result: {result.status}")
 
-        self.table_sets = []
-        for selected_set in result.selected_sets:
-            self.table_sets.append(list(selected_set.completed_tiles))
+        if append_to_table:
+            for selected_set in result.selected_sets:
+                self.table_sets.append(list(selected_set.completed_tiles))
+        else:
+            self.table_sets = []
+            for selected_set in result.selected_sets:
+                self.table_sets.append(list(selected_set.completed_tiles))
 
         self.hand = list(result.remaining_hand)
         return self.get_state()

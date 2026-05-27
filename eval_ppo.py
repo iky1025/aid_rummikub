@@ -43,6 +43,8 @@ def evaluate(
     seed=123,
     policy_mode="det",
     opponent="ilp",
+    alternate_first_player=False,
+    initial_meld_value=0,
     verbose=False,
 ):
     if torch.cuda.is_available():
@@ -59,7 +61,7 @@ def evaluate(
 
     max_candidates = 20
     max_turns = 100
-    obs_dim = 52 + 52 + 1 + 1
+    obs_dim = 52 + 52 + 1 + 1 + 1 + 1  # hand + table + deck + opp_hand + meld_ppo + meld_opp
     cand_feat_dim = 52 + 52
 
     env = RummikubPPOEnv(
@@ -67,6 +69,8 @@ def evaluate(
         max_turns=max_turns,
         seed=seed,
         opponent=opponent,
+        alternate_first_player=alternate_first_player,
+        initial_meld_value=initial_meld_value,
     )
 
     model = None
@@ -94,6 +98,12 @@ def evaluate(
     win_margins = []
     loss_margins = []
     net_scores = []
+    # R7: meld-phase split
+    pre_meld_turns = 0
+    pre_meld_forced = 0
+    pre_meld_chosen = 0
+    post_meld_forced = 0
+    post_meld_chosen = 0
 
     t0 = time.time()
 
@@ -126,7 +136,8 @@ def evaluate(
             )
 
             n_valid_candidates = int(mask[:max_candidates].sum())
-            if action == max_candidates:
+            is_draw = action == max_candidates
+            if is_draw:
                 ep_draw += 1
                 if n_valid_candidates == 0:
                     ep_forced_draw += 1
@@ -136,6 +147,20 @@ def evaluate(
             episode_reward += reward
             steps += 1
             final_info = info
+
+            # R7: classify by meld phase (info from THIS step)
+            pre_meld = bool(info.get("pre_meld", False))
+            if pre_meld:
+                pre_meld_turns += 1
+            if is_draw:
+                if pre_meld and n_valid_candidates == 0:
+                    pre_meld_forced += 1
+                elif pre_meld and n_valid_candidates > 0:
+                    pre_meld_chosen += 1
+                elif not pre_meld and n_valid_candidates == 0:
+                    post_meld_forced += 1
+                else:
+                    post_meld_chosen += 1
 
         total_actions += steps
         draw_actions += ep_draw
@@ -178,6 +203,11 @@ def evaluate(
     expected_score = sum(net_scores) / episodes if episodes else 0.0
     forced_ratio = forced_draw_actions / total_actions
     chosen_ratio = draw_actions / total_actions - forced_ratio
+    pre_meld_ratio = pre_meld_turns / total_actions
+    pre_meld_forced_ratio = pre_meld_forced / total_actions
+    pre_meld_chosen_ratio = pre_meld_chosen / total_actions
+    post_meld_forced_ratio = post_meld_forced / total_actions
+    post_meld_chosen_ratio = post_meld_chosen / total_actions
 
     result = {
         "label": f"{policy_mode}/vs_{opponent}",
@@ -195,6 +225,11 @@ def evaluate(
         "draw_ratio": draw_actions / total_actions,
         "forced_ratio": forced_ratio,
         "chosen_ratio": chosen_ratio,
+        "pre_meld_ratio": pre_meld_ratio,
+        "pre_meld_forced_ratio": pre_meld_forced_ratio,
+        "pre_meld_chosen_ratio": pre_meld_chosen_ratio,
+        "post_meld_forced_ratio": post_meld_forced_ratio,
+        "post_meld_chosen_ratio": post_meld_chosen_ratio,
         "elapsed": elapsed,
     }
 
@@ -212,6 +247,11 @@ def evaluate(
     print(f"draw_ratio      : {draw_actions / total_actions:.3f}")
     print(f"  forced        : {forced_ratio:.3f}")
     print(f"  chosen        : {chosen_ratio:.3f}")
+    print(f"pre_meld_ratio  : {pre_meld_ratio:.3f}  (fraction of turns in pre-meld phase)")
+    print(f"  pre.forced    : {pre_meld_forced_ratio:.3f}  (pre-meld + 0 cands + drew)")
+    print(f"  pre.chosen    : {pre_meld_chosen_ratio:.3f}  (pre-meld + had cands + drew)")
+    print(f"  post.forced   : {post_meld_forced_ratio:.3f}  (post-meld + 0 cands + drew)")
+    print(f"  post.chosen   : {post_meld_chosen_ratio:.3f}  (post-meld + had cands + drew) ← real chosen")
     print(f"elapsed         : {elapsed:.1f}s ({elapsed / episodes:.2f}s/ep)")
 
     return result
@@ -263,6 +303,10 @@ if __name__ == "__main__":
                         help="opponent type: greedy ILP or uniform random")
     parser.add_argument("--compare-opponents", action="store_true",
                         help="run PPO vs ILP AND vs random opponent, print comparison")
+    parser.add_argument("--alternate-first-player", action="store_true",
+                        help="R7: alternate ppo_player per game (symmetric eval)")
+    parser.add_argument("--initial-meld-value", type=int, default=0,
+                        help="R7: initial meld threshold (default 0=disabled; 30=standard)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -287,6 +331,8 @@ if __name__ == "__main__":
                 seed=args.seed,
                 policy_mode=policy_mode,
                 opponent=opp,
+                alternate_first_player=args.alternate_first_player,
+                initial_meld_value=args.initial_meld_value,
                 verbose=args.verbose,
             )
         )

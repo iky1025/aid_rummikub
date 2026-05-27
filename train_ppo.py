@@ -13,9 +13,13 @@ from ppo_env import RummikubPPOEnv
 from ppo_model import ActorCritic
 
 
-def make_env_fn(seed):
+def make_env_fn(seed, alternate_first_player=False, initial_meld_value=0):
     def _init():
-        return RummikubPPOEnv(seed=seed)
+        return RummikubPPOEnv(
+            seed=seed,
+            alternate_first_player=alternate_first_player,
+            initial_meld_value=initial_meld_value,
+        )
     return _init
 
 
@@ -58,7 +62,14 @@ def train(args):
     np.random.seed(seed)
 
     n_envs = args.n_envs
-    env_fns = [make_env_fn(seed + i) for i in range(n_envs)]
+    env_fns = [
+        make_env_fn(
+            seed + i,
+            alternate_first_player=args.alternate_first_player,
+            initial_meld_value=args.initial_meld_value,
+        )
+        for i in range(n_envs)
+    ]
     if args.use_subproc:
         vec_env = SubprocVecEnv(env_fns, start_method=args.start_method)
     else:
@@ -66,7 +77,7 @@ def train(args):
     print(f"vec_env: {'SubprocVecEnv' if args.use_subproc else 'DummyVecEnv'} with {n_envs} envs")
 
     max_candidates = 20
-    obs_dim = 52 + 52 + 1 + 1
+    obs_dim = 52 + 52 + 1 + 1 + 1 + 1  # hand + table + deck + opp_hand + meld_ppo + meld_opp
     cand_feat_dim = 52 + 52
 
     model = ActorCritic(
@@ -121,6 +132,9 @@ def train(args):
         "episodes", "win_rate", "loss_rate", "timeout_rate",
         "avg_episode_reward", "avg_episode_length",
         "draw_action_ratio", "forced_draw_ratio", "chosen_draw_ratio",
+        "pre_meld_ratio",
+        "pre_meld_forced_ratio", "pre_meld_chosen_ratio",
+        "post_meld_forced_ratio", "post_meld_chosen_ratio",
         "avg_candidate_count",
         "avg_win_margin", "avg_loss_margin", "expected_score",
         "actor_loss", "critic_loss", "entropy",
@@ -153,6 +167,12 @@ def train(args):
         timeout_count = 0
         draw_action_count = 0
         forced_draw_count = 0
+        # R7: split draws by meld phase
+        pre_meld_forced_count = 0
+        pre_meld_chosen_count = 0
+        post_meld_forced_count = 0
+        post_meld_chosen_count = 0
+        pre_meld_turn_count = 0
         candidate_count_sum = 0
         win_margin_sum = 0      # wins only (for avg_win_margin display)
         loss_margin_sum = 0     # losses only (for avg_loss_margin display)
@@ -193,7 +213,18 @@ def train(args):
             draw_action_count += int(draw_mask.sum())
             # forced draw = chose draw AND no valid candidate
             cand_mask_sum = mask[:, :max_candidates].sum(axis=1)  # (N,)
-            forced_draw_count += int(((cand_mask_sum == 0) & draw_mask).sum())
+            forced_mask = (cand_mask_sum == 0) & draw_mask
+            forced_draw_count += int(forced_mask.sum())
+            # R7: meld-phase split
+            pre_meld_arr = np.array(
+                [bool(info.get("pre_meld", False)) for info in infos],
+                dtype=bool,
+            )
+            pre_meld_turn_count += int(pre_meld_arr.sum())
+            pre_meld_forced_count += int((pre_meld_arr & draw_mask & (cand_mask_sum == 0)).sum())
+            pre_meld_chosen_count += int((pre_meld_arr & draw_mask & (cand_mask_sum > 0)).sum())
+            post_meld_forced_count += int((~pre_meld_arr & draw_mask & (cand_mask_sum == 0)).sum())
+            post_meld_chosen_count += int((~pre_meld_arr & draw_mask & (cand_mask_sum > 0)).sum())
             for info in infos:
                 candidate_count_sum += int(info.get("candidate_count", 0))
 
@@ -306,6 +337,12 @@ def train(args):
         draw_ratio = draw_action_count / total_actions
         forced_draw_ratio = forced_draw_count / total_actions
         chosen_draw_ratio = draw_ratio - forced_draw_ratio
+        # R7 phase-split ratios
+        pre_meld_ratio = pre_meld_turn_count / total_actions
+        pre_meld_forced_ratio = pre_meld_forced_count / total_actions
+        pre_meld_chosen_ratio = pre_meld_chosen_count / total_actions
+        post_meld_forced_ratio = post_meld_forced_count / total_actions
+        post_meld_chosen_ratio = post_meld_chosen_count / total_actions
         avg_candidate_count = candidate_count_sum / total_actions
         avg_win_margin = win_margin_sum / win_count if win_count else 0.0
         avg_loss_margin = loss_margin_sum / loss_count if loss_count else 0.0
@@ -327,7 +364,11 @@ def train(args):
             f"t={elapsed:6.1f}s steps={steps_total:6d} "
             f"eps={episodes:3d} W/L/T={win_count}/{loss_count}/{timeout_count} "
             f"rew={avg_reward:7.2f} len={avg_length:5.1f} "
-            f"draw={draw_ratio:.2f}(f={forced_draw_ratio:.2f} c={chosen_draw_ratio:.2f}) "
+            f"draw={draw_ratio:.2f}(pre.f={pre_meld_forced_ratio:.2f} "
+            f"pre.c={pre_meld_chosen_ratio:.2f} "
+            f"post.f={post_meld_forced_ratio:.2f} "
+            f"post.c={post_meld_chosen_ratio:.2f}) "
+            f"premeld={pre_meld_ratio:.2f} "
             f"wm={avg_win_margin:4.1f} lm={avg_loss_margin:4.1f} es={expected_score:+.2f} "
             f"a={avg_actor_loss:+.3f} cl={avg_critic_loss:.2f} ent={avg_entropy:.3f} "
             f"lr={current_lr:.1e} best={best_avg_reward:7.2f}"
@@ -338,6 +379,9 @@ def train(args):
             episodes, f"{win_rate:.3f}", f"{loss_rate:.3f}", f"{timeout_rate:.3f}",
             f"{avg_reward:.3f}", f"{avg_length:.2f}",
             f"{draw_ratio:.3f}", f"{forced_draw_ratio:.3f}", f"{chosen_draw_ratio:.3f}",
+            f"{pre_meld_ratio:.3f}",
+            f"{pre_meld_forced_ratio:.3f}", f"{pre_meld_chosen_ratio:.3f}",
+            f"{post_meld_forced_ratio:.3f}", f"{post_meld_chosen_ratio:.3f}",
             f"{avg_candidate_count:.2f}",
             f"{avg_win_margin:.2f}", f"{avg_loss_margin:.2f}", f"{expected_score:.2f}",
             f"{avg_actor_loss:.4f}", f"{avg_critic_loss:.4f}", f"{avg_entropy:.4f}",
@@ -377,6 +421,11 @@ def parse_args():
     parser.add_argument("--clip-range", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--tag", type=str, default="")
+    parser.add_argument("--alternate-first-player", action="store_true",
+                        help="R7: alternate ppo_player between 0 and 1 per reset")
+    parser.add_argument("--initial-meld-value", type=int, default=0,
+                        help="R7: initial meld threshold (default 0=disabled; "
+                             "30 enables standard Rummikub initial meld rule)")
     return parser.parse_args()
 
 
