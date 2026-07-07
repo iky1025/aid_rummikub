@@ -327,6 +327,23 @@ WW49/LL27 (부호검정 2.5σ, p≈0.012).**
 - 구성: `--consistent --greedy-margin 1.0 --endgame-search`, det=8,
   rollout-turns 24, cap 4. 페어당 ~40s (workers 8).
 
+## R10 Stage 0 결과: 그리디 증류 게이트 통과 (2026-07-08)
+
+파이프라인: `selfplay_data.py`(결정 레코드 생성) → `distill.py`(CE 증류) →
+`eval_mirror.py --policy student`(forward-only 평가). 상세 전략은 `ROADMAP.md`.
+
+- 데이터: greedy 자가대전 3,000페어 = 96,361 결정 (`data/stage0/`, 시드 100000~).
+- 학습: 10에폭 ~25초(MPS), **val_acc 0.97** — 후보 내용만으로 그리디의
+  max-play 선택을 식별 (모델이 permutation-invariant라 자명하지 않은 과제).
+- **판정 (160페어, 시드 2000~2159): 승률 49.4%, pair net -0.09±0.15,
+  WW14/LL16** (`R8/stage0_student_160.log`) — greedy sanity(46.2%)와 통계적
+  동급, pair net ~0. **게이트 통과: 네트워크 구조는 그리디 수준의 결정 함수를
+  행동 수준에서 재현 가능. 표현력 리스크(리스크 3) 해소.**
+- R1~R7 실패가 표현력이 아니라 학습 신호(RL 노이즈/보상 설계) 문제였다는
+  방증. 모델: `distill_stage0.pt` (git 미추적, *.pt).
+- 다음: Stage 1 — fair combo 선생 데이터 생성(하룻밤, ~1,000페어) →
+  이탈 가중 증류 → 160페어 판정 + ablation A(그리디+DFS만).
+
 ## 작업 규칙
 
 - 라운드(R) 단위로 진행하고, 라운드가 끝나면 README/CLAUDE.md의 해당 섹션을 갱신.
