@@ -23,6 +23,34 @@ import numpy as np
 from ppo_env import RummikubPPOEnv
 
 
+def _wrap_endgame(base_policy, args):
+    """R10: hybrid wrapper — delegate near-endgame decisions to the rollout
+    machinery's win-forcing DFS. greedy_margin=1e9 pins the delegate's 1-ply
+    fallback to greedy, so the delegate adds exactly the DFS and nothing else.
+    Used for `--policy student --endgame-search` (level-2 hybrid agent) and
+    `--policy greedy --endgame-search` (ablation A baseline: greedy + DFS)."""
+    from rollout_agent import RolloutPolicy
+    delegate = RolloutPolicy(
+        n_determinizations=args.determinizations,
+        max_rollout_turns=args.rollout_turns,
+        candidate_cap=args.candidate_cap,
+        greedy_margin=1e9,
+        consistent=args.consistent,
+        endgame_search=True,
+        search_nodes=args.search_nodes,
+        seed=args.seed,
+    )
+    trigger = delegate.search_hand_trigger
+
+    def policy(env, obs):
+        my = len(env.hands[env.ppo_player])
+        opp = len(env.hands[env.ilp_player])
+        if min(my, opp) <= trigger:
+            return delegate.select_action(env)
+        return base_policy(env, obs)
+    return policy
+
+
 def make_policy(args):
     """Return fn(env, obs) -> action."""
     max_candidates = args.max_candidates
@@ -32,6 +60,36 @@ def make_policy(args):
             if obs["mask"][:max_candidates].sum() > 0:
                 return 0  # candidate 0 = max-tiles best play (same as opponent)
             return max_candidates
+        if args.endgame_search:
+            policy = _wrap_endgame(policy, args)
+        return policy
+
+    if args.policy == "student":
+        import torch
+        from ppo_model import DistillStudent
+
+        model = DistillStudent(
+            obs_dim=obs_dim_from_env(),
+            cand_feat_dim=52 + 52,
+            max_candidates=max_candidates,
+        )
+        state_dict = torch.load(args.model, map_location="cpu",
+                                weights_only=True)
+        model.load_state_dict(state_dict)
+        model.eval()
+
+        def policy(env, obs):
+            state_t = torch.tensor(obs["state"], dtype=torch.float32)
+            cand_t = torch.tensor(obs["cand_feats"], dtype=torch.float32)
+            mask_t = torch.tensor(obs["mask"], dtype=torch.float32)
+            with torch.no_grad():
+                logits = model.forward_actor(
+                    state_t.unsqueeze(0), cand_t.unsqueeze(0)
+                ).squeeze(0)
+            logits[mask_t == 0] = -1e9
+            return int(torch.argmax(logits).item())
+        if args.endgame_search:
+            policy = _wrap_endgame(policy, args)
         return policy
 
     if args.policy == "random":
@@ -136,7 +194,8 @@ def _pair_worker(payload):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--policy", choices=["greedy", "rollout", "model", "random"],
+    parser.add_argument("--policy",
+                        choices=["greedy", "rollout", "model", "random", "student"],
                         required=True)
     parser.add_argument("--model", default="rummikub_ppo_best_r7.pt")
     parser.add_argument("--pairs", type=int, default=30)

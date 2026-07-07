@@ -79,3 +79,25 @@ class ActorCritic(nn.Module):
         entropy = dist.entropy()
 
         return log_probs, entropy, values
+
+
+class DistillStudent(ActorCritic):
+    """R10: supervised distillation student.
+
+    Same actor as ActorCritic (so eval code that only calls forward_actor can
+    load either), plus an auxiliary head predicting the opponent's hidden hand
+    (52 per-tile counts, same /2.0 scaling as observations) from the state
+    embedding — DouZero+-style representation shaping. The aux head is only
+    used at training time.
+    """
+
+    def __init__(self, obs_dim, cand_feat_dim, max_candidates):
+        super().__init__(obs_dim, cand_feat_dim, max_candidates)
+        self.opp_hand_head = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 52),
+        )
+
+    def forward_aux(self, obs):
+        return self.opp_hand_head(self.state_encoder(obs))
