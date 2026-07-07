@@ -74,6 +74,12 @@ def generate_all_valid_sets():
 
 ALL_VALID_SETS = generate_all_valid_sets()
 
+# The tile-need Counter of each valid set is static — precompute once.
+# (Building these per solve was ~65% of total solve time.)
+_SETS_WITH_NEEDS = [
+    (candidate_set, Counter(candidate_set)) for candidate_set in ALL_VALID_SETS
+]
+
 
 def is_valid_set(tile_set):
     if len(tile_set) < 3:
@@ -117,8 +123,9 @@ class CandidateSet:
         return "[" + " ".join(str(tile) for tile in self.completed_tiles) + "]"
 
 
-def make_candidate_info(candidate_set, available_counter):
-    need = Counter(candidate_set)
+def make_candidate_info(candidate_set, available_counter, need=None):
+    if need is None:
+        need = Counter(candidate_set)
     real_used = Counter()
 
     for tile, count in need.items():
@@ -137,8 +144,7 @@ def filter_available_sets(available_tiles):
     available_counter = Counter(available_tiles)
     candidates = []
 
-    for candidate_set in ALL_VALID_SETS:
-        need = Counter(candidate_set)
+    for candidate_set, need in _SETS_WITH_NEEDS:
         feasible = True
         for tile, count in need.items():
             if available_counter[tile] < count:
@@ -146,7 +152,9 @@ def filter_available_sets(available_tiles):
                 break
 
         if feasible:
-            candidates.append(make_candidate_info(candidate_set, available_counter))
+            candidates.append(
+                make_candidate_info(candidate_set, available_counter, need)
+            )
 
     return candidates
 
@@ -164,7 +172,144 @@ class ILPResult:
     remaining_hand: list
 
 
+def make_default_lp_solver():
+    """Prefer in-process HiGHS (~40x faster than CBC subprocess); fall back to COIN_CMD."""
+    try:
+        import highspy  # noqa: F401
+        # threads=1: these MIPs are tiny; thread startup costs more than it saves.
+        # presolve=off: HiGHS 1.13.1 presolve returns WRONG optima on our
+        # general-integer (upBound=2) models — found live by the DP/ILP
+        # crosscheck (2026-07-07, seed 2098 game). CBC and presolve-off agree
+        # with the DP.
+        return pulp.HiGHS(msg=False, output_flag=False, threads=1, presolve="off")
+    except ImportError:
+        return pulp.COIN_CMD(msg=False, threads=1)
+
+
+def _multiset_combos(keys, counts):
+    """Yield all ((tile, count), ...) sub-multiset selections."""
+    if not keys:
+        yield ()
+        return
+    head, rest = keys[0], keys[1:]
+    for tail in _multiset_combos(rest, counts):
+        for c in range(counts[head] + 1):
+            yield ((head, c),) + tail
+
+
 class RummikubILPSolver:
+    def __init__(self, use_dp=True, dp_crosscheck_every=100):
+        self.lp_solver = make_default_lp_solver()
+        # R9: polynomial-time DP replaces the ILP on the hot path (~25x).
+        # The ILP remains for exclusion/exact-k queries (solve_many) and as
+        # a validation reference.
+        self.dp = None
+        if use_dp:
+            from rummikub_dp import RummikubDP
+            self.dp = RummikubDP()
+        # Paranoid mode: every Nth DP solve is re-solved with the ILP and
+        # compared (status + optimal tile count). 0 disables.
+        self.dp_crosscheck_every = dp_crosscheck_every
+        self._dp_solve_count = 0
+        self._shadow = None
+
+    def _crosscheck(self, dp_result, hand_tiles, table_sets, require, min_val, ignore_tbl):
+        if self._shadow is None:
+            self._shadow = RummikubILPSolver(use_dp=False)
+        ilp_result = self._shadow.solve(
+            hand_tiles=hand_tiles,
+            table_sets=table_sets,
+            require_use_at_least_one_hand_tile=require,
+            min_play_value=min_val,
+            ignore_table=ignore_tbl,
+        )
+        dp_ok = dp_result.status == "Optimal"
+        ilp_ok = ilp_result.status == "Optimal"
+        if dp_ok != ilp_ok or (
+            dp_ok and dp_result.used_hand_tile_count != ilp_result.used_hand_tile_count
+        ):
+            raise RuntimeError(
+                "DP/ILP CROSSCHECK MISMATCH: "
+                f"dp=({dp_result.status},{dp_result.used_hand_tile_count}) "
+                f"ilp=({ilp_result.status},{ilp_result.used_hand_tile_count}) "
+                f"min_val={min_val} ignore={ignore_tbl} "
+                f"hand={sorted(hand_tiles, key=str)} table={table_sets}"
+            )
+
+    def _solve_via_dp(
+        self,
+        hand_tiles,
+        table_sets,
+        require_use_at_least_one_hand_tile,
+        min_play_value,
+        ignore_table,
+    ):
+        table = [] if ignore_table else table_sets
+        table_tiles = flatten(table)
+        table_counter = Counter(table_tiles)
+
+        res = self.dp.solve(
+            Counter(hand_tiles), table_counter, min_play_value=min_play_value,
+        )
+        self._dp_solve_count += 1
+        do_check = (
+            self.dp_crosscheck_every > 0
+            and self._dp_solve_count % self.dp_crosscheck_every == 0
+        )
+        used = res[0] if res is not None else 0
+        infeasible = res is None or (
+            require_use_at_least_one_hand_tile and used < 1
+        )
+        if infeasible:
+            result = ILPResult(
+                status="Infeasible",
+                selected_sets=[],
+                selected_indices=[],
+                candidates=[],
+                objective_value=0.0,
+                table_tile_count=len(table_tiles),
+                selected_tile_count=0,
+                used_hand_tile_count=0,
+                remaining_hand=list(hand_tiles),
+            )
+            if do_check:
+                self._crosscheck(
+                    result, hand_tiles, table_sets,
+                    require_use_at_least_one_hand_tile,
+                    min_play_value, ignore_table,
+                )
+            return result
+
+        sets = res[1]
+        used_counter = Counter(flatten(sets))
+        hand_used = used_counter - table_counter
+        remaining_counter = Counter(hand_tiles) - hand_used
+        remaining = []
+        for tile, count in remaining_counter.items():
+            remaining.extend([tile] * count)
+        selected = [
+            CandidateSet(completed_tiles=list(s), real_used=Counter(s))
+            for s in sets
+        ]
+        result = ILPResult(
+            status="Optimal",
+            selected_sets=selected,
+            selected_indices=[],
+            candidates=[],
+            objective_value=float(used),
+            table_tile_count=len(table_tiles),
+            selected_tile_count=sum(len(s) for s in sets),
+            used_hand_tile_count=used,
+            remaining_hand=remaining,
+        )
+        if do_check:
+            self._crosscheck(
+                result, hand_tiles, table_sets,
+                require_use_at_least_one_hand_tile,
+                min_play_value, ignore_table,
+            )
+        return result
+
     def solve(
         self,
         hand_tiles,
@@ -175,6 +320,7 @@ class RummikubILPSolver:
         exact_hand_tiles_used=None,
         min_play_value=0,
         ignore_table=False,
+        precomputed_candidates=None,
     ):
         """Solve ILP for best play.
 
@@ -189,6 +335,22 @@ class RummikubILPSolver:
 
         if excluded_solutions is None:
             excluded_solutions = []
+
+        # Hot path: plain max-play queries go through the DP.
+        if (
+            self.dp is not None
+            and not excluded_solutions
+            and max_hand_tiles_used is None
+            and exact_hand_tiles_used is None
+            and precomputed_candidates is None
+        ):
+            return self._solve_via_dp(
+                hand_tiles,
+                table_sets,
+                require_use_at_least_one_hand_tile,
+                min_play_value,
+                ignore_table,
+            )
 
         if not validate_table_sets(table_sets):
             raise ValueError("table has invalid set(s).")
@@ -210,13 +372,52 @@ class RummikubILPSolver:
         available_counter = Counter(available_tiles)
         table_tile_count = len(table_tiles)
 
-        candidates = filter_available_sets(available_tiles)
+        # Forced-draw precheck: a hand tile can only ever be played if it
+        # appears in some feasible set. If none does, "use at least one hand
+        # tile" is infeasible — skip candidate building and the ILP entirely.
+        # (Necessary condition only: the converse can still be infeasible.)
+        # Raw scan over the static set list: no allocations on the hot path.
+        if require_use_at_least_one_hand_tile:
+            hand_counter = Counter(hand_tiles)
+            playable = False
+            for _, need in _SETS_WITH_NEEDS:
+                feasible = True
+                uses_hand = False
+                for tile, count in need.items():
+                    if available_counter[tile] < count:
+                        feasible = False
+                        break
+                    if hand_counter[tile] > 0:
+                        uses_hand = True
+                if feasible and uses_hand:
+                    playable = True
+                    break
+            if not playable:
+                return ILPResult(
+                    status="Infeasible",
+                    selected_sets=[],
+                    selected_indices=[],
+                    candidates=[],
+                    objective_value=0.0,
+                    table_tile_count=table_tile_count,
+                    selected_tile_count=0,
+                    used_hand_tile_count=0,
+                    remaining_hand=list(hand_tiles),
+                )
+
+        if precomputed_candidates is not None:
+            candidates = precomputed_candidates
+        else:
+            candidates = filter_available_sets(available_tiles)
 
         problem = pulp.LpProblem("Rummikub_ILP", pulp.LpMaximize)
 
+        # upBound=2: with two copies of every tile the SAME set can legally
+        # appear twice on the table (R9 fix — Binary vars silently dropped
+        # such solutions and could even make legal tables "infeasible").
         x = []
         for i in range(len(candidates)):
-            x.append(pulp.LpVariable(f"x_{i}", lowBound=0, upBound=1, cat="Binary"))
+            x.append(pulp.LpVariable(f"x_{i}", lowBound=0, upBound=2, cat="Integer"))
 
         used_real_expr = {}
         for tile in available_counter:
@@ -267,7 +468,7 @@ class RummikubILPSolver:
 
         problem += used_hand_tile_expr
 
-        result_status = problem.solve(pulp.COIN_CMD(msg=False, threads=1))
+        result_status = problem.solve(self.lp_solver)
         status = pulp.LpStatus[result_status]
 
         selected_sets = []
@@ -276,7 +477,8 @@ class RummikubILPSolver:
         if status == "Optimal":
             for i, candidate in enumerate(candidates):
                 value = pulp.value(x[i])
-                if value is not None and round(value) == 1:
+                count = int(round(value)) if value is not None else 0
+                for _ in range(count):
                     selected_sets.append(candidate)
                     selected_indices.append(i)
 
@@ -331,6 +533,14 @@ class RummikubILPSolver:
         results = []
         seen_indices = set()
 
+        # The candidate-set list only depends on (hand, table, ignore_table),
+        # which are fixed across every solve below — compute it once.
+        if ignore_table:
+            available_tiles = list(hand_tiles)
+        else:
+            available_tiles = list(hand_tiles) + flatten(table_sets)
+        shared_candidates = filter_available_sets(available_tiles)
+
         # Phase 1: find max possible tile count
         first = self.solve(
             hand_tiles=hand_tiles,
@@ -338,6 +548,7 @@ class RummikubILPSolver:
             require_use_at_least_one_hand_tile=require_use_at_least_one_hand_tile,
             min_play_value=min_play_value,
             ignore_table=ignore_table,
+            precomputed_candidates=shared_candidates,
         )
         if first.status != "Optimal" or first.used_hand_tile_count <= 0:
             return []
@@ -357,6 +568,7 @@ class RummikubILPSolver:
                 exact_hand_tiles_used=target_k,
                 min_play_value=min_play_value,
                 ignore_table=ignore_table,
+                precomputed_candidates=shared_candidates,
             )
             if r.status != "Optimal" or r.used_hand_tile_count <= 0:
                 continue
@@ -377,6 +589,7 @@ class RummikubILPSolver:
                 excluded_solutions=excluded,
                 min_play_value=min_play_value,
                 ignore_table=ignore_table,
+                precomputed_candidates=shared_candidates,
             )
             if r.status != "Optimal" or r.used_hand_tile_count <= 0:
                 break
@@ -388,6 +601,106 @@ class RummikubILPSolver:
             seen_indices.add(key)
             excluded.append(list(r.selected_indices))
 
+        return results
+
+    def enumerate_moves(
+        self,
+        hand_tiles,
+        table_sets=None,
+        min_play_value=0,
+        ignore_table=False,
+        subset_limit=4096,
+    ):
+        """Enumerate ALL distinct playable moves.
+
+        A move is identified by the sub-multiset S of hand tiles played
+        (vs a rearranging opponent only the multiset matters — R9 finding).
+        Enumerates sub-multisets of "active" hand tiles (those appearing in
+        at least one feasible set) and keeps those where table+S admits a
+        valid partition. Returns ILPResults sorted by tile count descending,
+        or None when the subset space exceeds subset_limit (caller should
+        fall back to solve_many).
+        """
+        if table_sets is None:
+            table_sets = []
+        hand_tiles = list(hand_tiles)
+
+        if ignore_table:
+            available = hand_tiles
+        else:
+            available = hand_tiles + flatten(table_sets)
+        candidates = filter_available_sets(available)
+
+        active_types = set()
+        for c in candidates:
+            active_types.update(c.real_used)
+        hand_counter = Counter(hand_tiles)
+        active = {t: n for t, n in hand_counter.items() if t in active_types}
+
+        space = 1
+        for n in active.values():
+            space *= n + 1
+        if space - 1 > subset_limit:
+            return None
+
+        keys = list(active)
+        results = []
+        table_counter = Counter([] if ignore_table else flatten(table_sets))
+        for combo in _multiset_combos(keys, active):
+            subset = []
+            for tile, count in combo:
+                subset.extend([tile] * count)
+            if not subset:
+                continue
+            if min_play_value > 0:
+                if sum(t.number for t in subset) < min_play_value:
+                    continue
+            if self.dp is not None:
+                arrangement = self.dp.feasible(table_counter + Counter(subset))
+                if arrangement is None:
+                    continue
+                r = ILPResult(
+                    status="Optimal",
+                    selected_sets=[
+                        CandidateSet(completed_tiles=list(s), real_used=Counter(s))
+                        for s in arrangement
+                    ],
+                    selected_indices=[],
+                    candidates=[],
+                    objective_value=float(len(subset)),
+                    table_tile_count=sum(table_counter.values()),
+                    selected_tile_count=sum(len(s) for s in arrangement),
+                    used_hand_tile_count=len(subset),
+                    remaining_hand=[],
+                )
+            else:
+                r = self.solve(
+                    hand_tiles=subset,
+                    table_sets=table_sets,
+                    require_use_at_least_one_hand_tile=True,
+                    exact_hand_tiles_used=len(subset),
+                    min_play_value=min_play_value,
+                    ignore_table=ignore_table,
+                )
+                if r.status != "Optimal" or r.used_hand_tile_count != len(subset):
+                    continue
+            remaining_counter = hand_counter - Counter(subset)
+            remaining = []
+            for tile, count in remaining_counter.items():
+                remaining.extend([tile] * count)
+            results.append(ILPResult(
+                status="Optimal",
+                selected_sets=r.selected_sets,
+                selected_indices=r.selected_indices,
+                candidates=r.candidates,
+                objective_value=float(len(subset)),
+                table_tile_count=r.table_tile_count,
+                selected_tile_count=r.selected_tile_count,
+                used_hand_tile_count=len(subset),
+                remaining_hand=remaining,
+            ))
+
+        results.sort(key=lambda r: -r.used_hand_tile_count)
         return results
 
     def _compute_remaining_hand(self, hand_tiles, selected_sets, table_counter):
