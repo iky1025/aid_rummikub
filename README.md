@@ -1,11 +1,77 @@
 # AID Rummikub — PPO + ILP
 
-루미큐브(조커 제외 단순화 버전)를 PPO 에이전트가 학습하고, 그리디 ILP 솔버를 상대로 대결하는 프로젝트.
+루미큐브(조커 제외 단순화 버전)에서 그리디 ILP 베이스라인을 이기는 에이전트를 만드는 프로젝트.
 
-- 에이전트: PPO (Proximal Policy Optimization)
-- 상대 봇: greedy ILP (매 턴 손패 사용량 최대화)
-- 후보 생성: ILP가 PPO에게 매 턴 가능한 수 N개를 후보로 제공
-- 액션: PPO가 후보 중 하나를 고르거나 "드로우" 선택
+- 에이전트: PPO (R1~R7) → determinized rollout + 엔드게임 탐색 (R8~, 현재)
+- 상대 봇: greedy ILP/DP (매 턴 손패 사용량 최대화)
+- 후보 생성: 솔버가 에이전트에게 매 턴 가능한 수 N개를 후보로 제공
+- 액션: 에이전트가 후보 중 하나를 고르거나 "드로우" 선택
+
+---
+
+## 0. 프로젝트 현황 (2026-07, R8~R9)
+
+> 아래 1~11장은 PPO 시대(R1~R7)의 문서로, 게임 룰·코드 구조 참조용으로는 유효하나
+> 실험 방법론은 R8부터 크게 바뀌었다. 라운드별 상세 기록은 `CLAUDE.md` 참조.
+
+### 스토리 요약
+
+1. **R1~R7 (PPO)**: 그리디 상대 승률 40~60% 진동, 발전 없음. 진단 — dense 보상이
+   사실상 그리디 모방을 가르쳤고, 턴의 절반이 강제 드로우라 결정 기회 자체가 희박.
+2. **R8 (방향 전환)**: 학습 전에 "이길 여지(신호)가 존재하는가"부터 분해.
+   - 인프라: 솔버 CBC→HiGHS→자체 DP(`rummikub_dp.py`, 26×), 미러 페어 평가
+     (`eval_mirror.py`)로 덱 운 상쇄. 실험 한 세트가 수 분이면 돎.
+   - 오라클 실험: 완전정보(상대 손패+덱)면 승률 ~89% — 단 대부분이 **자기 미래
+     드로우 예지**(예측 불가). 상대 **손패만** 알면 +6%p — 이게 회수 가능한 예산.
+   - 부수 성과: 기존 ILP의 중복 세트 버그, HiGHS 1.13 presolve 버그 발견·수정
+     (`R8/highs_issue/`).
+3. **R9 (현재)**: 정보 일관 determinization + 엔드게임 승리강제 탐색으로
+   **치팅 없이 그리디를 유의하게 이기는 첫 에이전트 확보**.
+
+### 핵심 결과 (160페어 = 320게임, 미러 페어, meld=30, 시드 2000~2159)
+
+| 에이전트 | 승률 | pair net | 유의성 |
+|---|---|---|---|
+| greedy sanity (기준선) | 46.2%* | -0.45 | — |
+| fair rollout (손패 정보 없음) | 45.0%* | -0.53 | 무가치 확정 |
+| **fair combo** (consistent+margin+엔드게임탐색) | **56.9%** | +0.46±0.31 | 부호검정 2.5σ (WW49/LL27) |
+| semi-oracle + 엔드게임탐색 (손패 치팅, 상한 참조용) | 60.0% | +0.80±0.27 | ~3σ (WW51/LL19) |
+| full oracle (손패+덱 치팅, 이론 상한) | ~89% | +5~6 | 덱 예지 지배, 회수 불가 |
+
+\* sanity/fair는 40페어 측정.
+
+### 재현
+
+```bash
+# 기준선 (greedy vs greedy)
+python eval_mirror.py --policy greedy --pairs 40 --seed 2000 --initial-meld-value 30 --workers 8
+
+# fair combo (배치 가능 에이전트, 치팅 없음)
+python eval_mirror.py --policy rollout --consistent --greedy-margin 1.0 --endgame-search \
+    --pairs 40 --seed 2000 --initial-meld-value 30 --determinizations 8 \
+    --rollout-turns 24 --candidate-cap 4 --workers 8
+
+# semi-oracle 상한 (상대 손패 공개)
+python eval_mirror.py --policy rollout --oracle hand --endgame-search \
+    --pairs 40 --seed 2000 --initial-meld-value 30 --determinizations 8 \
+    --rollout-turns 60 --candidate-cap 6 --workers 8
+```
+
+### R8~ 신규 파일
+
+| 파일 | 역할 |
+|---|---|
+| `rummikub_dp.py` | van Rijn & Takes 스타일 DP 솔버 (핫패스, ILP 대비 26×) |
+| `rollout_agent.py` | determinized rollout 정책 + 엔드게임 승리강제 DFS |
+| `eval_mirror.py` | 미러 페어(같은 덱, 자리 교대) 저분산 평가 |
+| `autopsy_oracle.py` | 패배 게임 부검 — 내 수 분기 DFS로 "이길 수 있었나" 증명 |
+| `R8/` | 실험 로그 전체 (CLAUDE.md 수치의 증거 자료) |
+
+### 다음 단계 (R9 계속)
+
+- 상대 손패 분포 예측 학습 → determinization을 예측 분포에서 샘플링 (semi와의
+  3.1%p 갭 회수)
+- expert iteration: 탐색 에이전트를 네트워크에 증류 → 플레이아웃 정책 교체 루프
 
 ---
 

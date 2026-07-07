@@ -1,0 +1,117 @@
+using device: mps
+vec_env: SubprocVecEnv with 10 envs
+config: n_envs=10 n_steps=128 total_updates=100 batch_size=128 ppo_epochs=4 lr=0.0003->3e-05 clip=0.1
+experience per update: 1280 steps
+output: rummikub_ppo_model_r7.pt, rummikub_ppo_best_r7.pt, train_log_r7.csv
+upd=  1/100 t= 134.9s steps=  1280 eps= 28 W/L/T=13/15/0 rew=  -8.79 len= 40.0 draw=0.55(pre.f=0.09 pre.c=0.00 post.f=0.44 post.c=0.02) premeld=0.11 wm= 2.4 lm= 2.1 es=+0.00 a=-0.000 cl=10.75 ent=0.808 lr=3.0e-04 best=  -8.79
+upd=  2/100 t= 318.1s steps=  2560 eps= 29 W/L/T=12/17/0 rew= -10.17 len= 43.2 draw=0.55(pre.f=0.06 pre.c=0.00 post.f=0.46 post.c=0.02) premeld=0.08 wm= 2.3 lm= 1.6 es=+0.03 a=-0.000 cl=8.97 ent=0.864 lr=3.0e-04 best=  -8.79
+upd=  3/100 t= 484.9s steps=  3840 eps= 30 W/L/T=14/16/0 rew=  -8.85 len= 39.9 draw=0.53(pre.f=0.06 pre.c=0.00 post.f=0.45 post.c=0.02) premeld=0.08 wm= 2.1 lm= 2.6 es=-0.43 a=-0.000 cl=8.38 ent=0.838 lr=2.9e-04 best=  -8.79
+upd=  4/100 t= 677.5s steps=  5120 eps= 32 W/L/T=17/15/0 rew=  -8.58 len= 42.4 draw=0.55(pre.f=0.10 pre.c=0.00 post.f=0.44 post.c=0.01) premeld=0.12 wm= 2.5 lm= 2.5 es=+0.16 a=-0.000 cl=8.38 ent=0.891 lr=2.9e-04 best=  -8.58
+upd=  5/100 t=1606.0s steps=  6400 eps= 31 W/L/T=14/17/0 rew=  -9.54 len= 40.4 draw=0.53(pre.f=0.09 pre.c=0.00 post.f=0.43 post.c=0.01) premeld=0.12 wm= 2.1 lm= 3.3 es=-0.84 a=-0.001 cl=7.88 ent=0.801 lr=2.9e-04 best=  -8.58
+upd=  6/100 t=3573.3s steps=  7680 eps= 33 W/L/T=14/19/0 rew=  -9.38 len= 39.6 draw=0.56(pre.f=0.12 pre.c=0.00 post.f=0.42 post.c=0.01) premeld=0.15 wm= 2.0 lm= 2.7 es=-0.73 a=-0.001 cl=7.67 ent=0.800 lr=2.9e-04 best=  -8.58
+upd=  7/100 t=3730.8s steps=  8960 eps= 31 W/L/T=12/19/0 rew= -10.29 len= 41.6 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.45 post.c=0.01) premeld=0.11 wm= 2.3 lm= 2.5 es=-0.61 a=-0.001 cl=8.08 ent=0.838 lr=2.8e-04 best=  -8.58
+upd=  8/100 t=3900.5s steps= 10240 eps= 31 W/L/T=15/16/0 rew=  -9.15 len= 42.1 draw=0.54(pre.f=0.07 pre.c=0.00 post.f=0.45 post.c=0.02) premeld=0.10 wm= 1.9 lm= 1.9 es=-0.06 a=-0.001 cl=7.29 ent=0.846 lr=2.8e-04 best=  -8.58
+upd=  9/100 t=4074.4s steps= 11520 eps= 29 W/L/T=16/13/0 rew=  -8.18 len= 40.6 draw=0.55(pre.f=0.10 pre.c=0.00 post.f=0.43 post.c=0.01) premeld=0.13 wm= 2.2 lm= 2.5 es=+0.10 a=-0.002 cl=7.63 ent=0.876 lr=2.8e-04 best=  -8.18
+upd= 10/100 t=4247.2s steps= 12800 eps= 32 W/L/T=12/20/0 rew=  -9.87 len= 40.7 draw=0.53(pre.f=0.07 pre.c=0.00 post.f=0.45 post.c=0.01) premeld=0.10 wm= 2.8 lm= 2.2 es=-0.34 a=-0.003 cl=7.39 ent=0.842 lr=2.8e-04 best=  -8.18
+  saved: rummikub_ppo_model_r7.pt
+upd= 11/100 t=4413.4s steps= 14080 eps= 33 W/L/T=17/16/0 rew=  -8.16 len= 38.9 draw=0.55(pre.f=0.11 pre.c=0.00 post.f=0.43 post.c=0.01) premeld=0.14 wm= 2.8 lm= 2.9 es=+0.03 a=-0.003 cl=8.14 ent=0.807 lr=2.7e-04 best=  -8.16
+upd= 12/100 t=4610.1s steps= 15360 eps= 31 W/L/T=14/17/0 rew=  -9.67 len= 41.6 draw=0.55(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.01) premeld=0.11 wm= 1.8 lm= 2.2 es=-0.42 a=-0.003 cl=8.07 ent=0.848 lr=2.7e-04 best=  -8.16
+upd= 13/100 t=4780.0s steps= 16640 eps= 32 W/L/T=10/22/0 rew= -10.96 len= 41.4 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.44 post.c=0.01) premeld=0.12 wm= 2.0 lm= 2.1 es=-0.81 a=-0.002 cl=6.34 ent=0.846 lr=2.7e-04 best=  -8.16
+upd= 14/100 t=4958.2s steps= 17920 eps= 34 W/L/T=12/22/0 rew= -10.08 len= 38.4 draw=0.54(pre.f=0.11 pre.c=0.00 post.f=0.43 post.c=0.01) premeld=0.14 wm= 2.7 lm= 3.0 es=-0.97 a=-0.002 cl=7.39 ent=0.808 lr=2.6e-04 best=  -8.16
+upd= 15/100 t=5131.8s steps= 19200 eps= 31 W/L/T=15/16/0 rew=  -8.74 len= 41.3 draw=0.53(pre.f=0.07 pre.c=0.00 post.f=0.46 post.c=0.01) premeld=0.09 wm= 2.5 lm= 2.3 es=+0.03 a=-0.002 cl=8.06 ent=0.821 lr=2.6e-04 best=  -8.16
+upd= 16/100 t=5323.7s steps= 20480 eps= 31 W/L/T=20/11/0 rew=  -7.27 len= 41.7 draw=0.54(pre.f=0.06 pre.c=0.00 post.f=0.47 post.c=0.01) premeld=0.08 wm= 2.2 lm= 2.5 es=+0.55 a=-0.002 cl=7.66 ent=0.831 lr=2.6e-04 best=  -7.27
+upd= 17/100 t=5502.5s steps= 21760 eps= 29 W/L/T=15/14/0 rew=  -8.70 len= 42.4 draw=0.54(pre.f=0.07 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.10 wm= 2.0 lm= 2.1 es=+0.00 a=-0.003 cl=7.50 ent=0.807 lr=2.6e-04 best=  -7.27
+upd= 18/100 t=5697.6s steps= 23040 eps= 29 W/L/T=18/11/0 rew=  -7.43 len= 41.7 draw=0.53(pre.f=0.07 pre.c=0.00 post.f=0.45 post.c=0.01) premeld=0.09 wm= 2.0 lm= 1.8 es=+0.55 a=-0.002 cl=6.51 ent=0.821 lr=2.5e-04 best=  -7.27
+upd= 19/100 t=5875.8s steps= 24320 eps= 33 W/L/T=21/12/0 rew=  -6.89 len= 40.4 draw=0.54(pre.f=0.07 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.09 wm= 2.0 lm= 2.0 es=+0.52 a=-0.002 cl=6.87 ent=0.787 lr=2.5e-04 best=  -6.89
+upd= 20/100 t=6048.7s steps= 25600 eps= 31 W/L/T=15/16/0 rew=  -9.10 len= 41.0 draw=0.54(pre.f=0.10 pre.c=0.00 post.f=0.44 post.c=0.01) premeld=0.12 wm= 1.9 lm= 2.5 es=-0.39 a=-0.004 cl=7.11 ent=0.757 lr=2.5e-04 best=  -6.89
+  saved: rummikub_ppo_model_r7.pt
+upd= 21/100 t=6301.4s steps= 26880 eps= 33 W/L/T=12/21/0 rew= -10.08 len= 40.1 draw=0.55(pre.f=0.11 pre.c=0.00 post.f=0.44 post.c=0.01) premeld=0.13 wm= 2.5 lm= 2.2 es=-0.48 a=-0.003 cl=6.12 ent=0.808 lr=2.5e-04 best=  -6.89
+upd= 22/100 t=6591.4s steps= 28160 eps= 30 W/L/T=11/19/0 rew= -10.48 len= 40.4 draw=0.56(pre.f=0.09 pre.c=0.00 post.f=0.46 post.c=0.01) premeld=0.11 wm= 1.7 lm= 2.4 es=-0.90 a=-0.002 cl=6.88 ent=0.759 lr=2.4e-04 best=  -6.89
+upd= 23/100 t=6875.6s steps= 29440 eps= 33 W/L/T=19/14/0 rew=  -7.68 len= 40.6 draw=0.53(pre.f=0.07 pre.c=0.00 post.f=0.45 post.c=0.01) premeld=0.10 wm= 2.1 lm= 2.9 es=+0.00 a=-0.002 cl=7.17 ent=0.788 lr=2.4e-04 best=  -6.89
+upd= 24/100 t=7080.5s steps= 30720 eps= 30 W/L/T=10/20/0 rew= -11.06 len= 40.6 draw=0.56(pre.f=0.10 pre.c=0.00 post.f=0.45 post.c=0.01) premeld=0.12 wm= 1.7 lm= 2.9 es=-1.37 a=-0.004 cl=6.70 ent=0.808 lr=2.4e-04 best=  -6.89
+upd= 25/100 t=7291.1s steps= 32000 eps= 33 W/L/T=20/13/0 rew=  -7.10 len= 40.2 draw=0.53(pre.f=0.08 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.5 lm= 2.0 es=+0.76 a=-0.003 cl=8.42 ent=0.835 lr=2.4e-04 best=  -6.89
+upd= 26/100 t=7491.8s steps= 33280 eps= 29 W/L/T=15/14/0 rew=  -8.52 len= 41.0 draw=0.53(pre.f=0.10 pre.c=0.00 post.f=0.42 post.c=0.01) premeld=0.12 wm= 1.9 lm= 2.4 es=-0.21 a=-0.003 cl=6.39 ent=0.808 lr=2.3e-04 best=  -6.89
+upd= 27/100 t=7682.7s steps= 34560 eps= 34 W/L/T=17/17/0 rew=  -9.20 len= 42.2 draw=0.56(pre.f=0.13 pre.c=0.00 post.f=0.43 post.c=0.00) premeld=0.15 wm= 2.5 lm= 2.9 es=-0.18 a=-0.003 cl=6.94 ent=0.812 lr=2.3e-04 best=  -6.89
+upd= 28/100 t=7845.2s steps= 35840 eps= 31 W/L/T=16/15/0 rew=  -8.43 len= 41.3 draw=0.53(pre.f=0.05 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.08 wm= 1.9 lm= 1.8 es=+0.13 a=-0.003 cl=6.05 ent=0.736 lr=2.3e-04 best=  -6.89
+upd= 29/100 t=8253.3s steps= 37120 eps= 31 W/L/T=16/15/0 rew=  -8.29 len= 40.6 draw=0.53(pre.f=0.09 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.12 wm= 2.2 lm= 2.1 es=+0.13 a=-0.003 cl=6.84 ent=0.810 lr=2.2e-04 best=  -6.89
+upd= 30/100 t=9113.9s steps= 38400 eps= 30 W/L/T=16/14/0 rew=  -8.62 len= 42.0 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.10 wm= 2.1 lm= 2.9 es=-0.23 a=-0.003 cl=5.87 ent=0.819 lr=2.2e-04 best=  -6.89
+  saved: rummikub_ppo_model_r7.pt
+upd= 31/100 t=9775.7s steps= 39680 eps= 33 W/L/T=11/22/0 rew= -10.39 len= 39.3 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.7 lm= 2.6 es=-0.85 a=-0.003 cl=6.79 ent=0.768 lr=2.2e-04 best=  -6.89
+upd= 32/100 t=9957.1s steps= 40960 eps= 30 W/L/T=15/15/0 rew=  -9.08 len= 41.6 draw=0.55(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.3 lm= 3.3 es=-0.47 a=-0.003 cl=7.67 ent=0.798 lr=2.2e-04 best=  -6.89
+upd= 33/100 t=10136.4s steps= 42240 eps= 32 W/L/T=13/19/0 rew=  -9.69 len= 40.2 draw=0.54(pre.f=0.11 pre.c=0.00 post.f=0.43 post.c=0.00) premeld=0.13 wm= 2.2 lm= 2.7 es=-0.72 a=-0.004 cl=6.65 ent=0.848 lr=2.1e-04 best=  -6.89
+upd= 34/100 t=10341.8s steps= 43520 eps= 31 W/L/T=15/16/0 rew=  -8.67 len= 40.1 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.43 post.c=0.01) premeld=0.12 wm= 1.9 lm= 2.3 es=-0.26 a=-0.003 cl=8.04 ent=0.857 lr=2.1e-04 best=  -6.89
+upd= 35/100 t=10584.8s steps= 44800 eps= 31 W/L/T=16/15/0 rew=  -8.76 len= 42.3 draw=0.55(pre.f=0.10 pre.c=0.00 post.f=0.43 post.c=0.01) premeld=0.12 wm= 2.2 lm= 1.9 es=+0.19 a=-0.001 cl=6.27 ent=0.835 lr=2.1e-04 best=  -6.89
+upd= 36/100 t=10825.0s steps= 46080 eps= 33 W/L/T=18/15/0 rew=  -8.07 len= 39.4 draw=0.55(pre.f=0.07 pre.c=0.00 post.f=0.46 post.c=0.01) premeld=0.10 wm= 1.9 lm= 2.8 es=-0.24 a=-0.004 cl=7.07 ent=0.793 lr=2.1e-04 best=  -6.89
+upd= 37/100 t=11051.4s steps= 47360 eps= 31 W/L/T=14/17/0 rew=  -9.17 len= 39.9 draw=0.55(pre.f=0.09 pre.c=0.00 post.f=0.44 post.c=0.01) premeld=0.12 wm= 1.9 lm= 2.4 es=-0.42 a=-0.004 cl=7.25 ent=0.807 lr=2.0e-04 best=  -6.89
+upd= 38/100 t=11301.0s steps= 48640 eps= 31 W/L/T=9/22/0 rew= -11.19 len= 40.4 draw=0.55(pre.f=0.10 pre.c=0.00 post.f=0.44 post.c=0.01) premeld=0.12 wm= 1.9 lm= 1.9 es=-0.81 a=-0.004 cl=6.29 ent=0.840 lr=2.0e-04 best=  -6.89
+upd= 39/100 t=11549.8s steps= 49920 eps= 31 W/L/T=15/16/0 rew=  -9.25 len= 41.8 draw=0.55(pre.f=0.11 pre.c=0.00 post.f=0.43 post.c=0.01) premeld=0.13 wm= 2.7 lm= 2.4 es=+0.06 a=-0.002 cl=6.97 ent=0.797 lr=2.0e-04 best=  -6.89
+upd= 40/100 t=11767.4s steps= 51200 eps= 34 W/L/T=17/17/0 rew=  -8.09 len= 39.1 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.11 wm= 2.6 lm= 1.8 es=+0.41 a=-0.004 cl=8.67 ent=0.779 lr=1.9e-04 best=  -6.89
+  saved: rummikub_ppo_model_r7.pt
+upd= 41/100 t=11987.1s steps= 52480 eps= 29 W/L/T=14/15/0 rew=  -9.28 len= 42.2 draw=0.55(pre.f=0.07 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.09 wm= 2.0 lm= 2.4 es=-0.28 a=-0.003 cl=6.50 ent=0.718 lr=1.9e-04 best=  -6.89
+upd= 42/100 t=12249.0s steps= 53760 eps= 34 W/L/T=18/16/0 rew=  -8.47 len= 41.1 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.4 lm= 2.6 es=+0.09 a=-0.003 cl=6.77 ent=0.849 lr=1.9e-04 best=  -6.89
+upd= 43/100 t=12484.4s steps= 55040 eps= 28 W/L/T=15/13/0 rew=  -8.01 len= 40.9 draw=0.53(pre.f=0.07 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.09 wm= 2.3 lm= 2.3 es=+0.18 a=-0.003 cl=6.29 ent=0.761 lr=1.9e-04 best=  -6.89
+upd= 44/100 t=12734.6s steps= 56320 eps= 34 W/L/T=21/13/0 rew=  -7.26 len= 40.0 draw=0.55(pre.f=0.13 pre.c=0.00 post.f=0.42 post.c=0.00) premeld=0.15 wm= 2.1 lm= 3.0 es=+0.15 a=-0.004 cl=8.16 ent=0.813 lr=1.8e-04 best=  -6.89
+upd= 45/100 t=12982.3s steps= 57600 eps= 31 W/L/T=21/10/0 rew=  -6.50 len= 40.8 draw=0.53(pre.f=0.08 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.10 wm= 2.3 lm= 2.0 es=+0.90 a=-0.003 cl=7.05 ent=0.798 lr=1.8e-04 best=  -6.50
+upd= 46/100 t=13231.9s steps= 58880 eps= 31 W/L/T=11/20/0 rew= -10.46 len= 40.5 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.2 lm= 2.5 es=-0.84 a=-0.004 cl=6.02 ent=0.779 lr=1.8e-04 best=  -6.50
+upd= 47/100 t=13478.1s steps= 60160 eps= 31 W/L/T=17/14/0 rew=  -7.79 len= 39.6 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.12 wm= 1.9 lm= 2.5 es=-0.10 a=-0.004 cl=7.39 ent=0.780 lr=1.8e-04 best=  -6.50
+upd= 48/100 t=13746.4s steps= 61440 eps= 32 W/L/T=17/15/0 rew=  -8.77 len= 41.8 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.44 post.c=0.01) premeld=0.11 wm= 1.8 lm= 3.1 es=-0.53 a=-0.003 cl=5.60 ent=0.737 lr=1.7e-04 best=  -6.50
+upd= 49/100 t=14020.5s steps= 62720 eps= 31 W/L/T=10/21/0 rew= -10.70 len= 41.5 draw=0.53(pre.f=0.05 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.08 wm= 2.4 lm= 2.2 es=-0.74 a=-0.004 cl=6.90 ent=0.754 lr=1.7e-04 best=  -6.50
+upd= 50/100 t=14271.1s steps= 64000 eps= 32 W/L/T=16/16/0 rew=  -8.28 len= 39.9 draw=0.54(pre.f=0.10 pre.c=0.00 post.f=0.43 post.c=0.00) premeld=0.13 wm= 2.6 lm= 2.6 es=+0.00 a=-0.004 cl=7.81 ent=0.745 lr=1.7e-04 best=  -6.50
+  saved: rummikub_ppo_model_r7.pt
+upd= 51/100 t=14559.7s steps= 65280 eps= 32 W/L/T=18/14/0 rew=  -7.97 len= 40.3 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.0 lm= 2.3 es=+0.12 a=-0.003 cl=6.36 ent=0.817 lr=1.6e-04 best=  -6.50
+upd= 52/100 t=14841.5s steps= 66560 eps= 33 W/L/T=17/16/0 rew=  -8.40 len= 41.2 draw=0.54(pre.f=0.07 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.09 wm= 2.4 lm= 2.1 es=+0.21 a=-0.004 cl=8.69 ent=0.765 lr=1.6e-04 best=  -6.50
+upd= 53/100 t=15138.3s steps= 67840 eps= 28 W/L/T=17/11/0 rew=  -7.35 len= 40.8 draw=0.54(pre.f=0.07 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.10 wm= 2.2 lm= 2.3 es=+0.43 a=-0.004 cl=6.57 ent=0.750 lr=1.6e-04 best=  -6.50
+upd= 54/100 t=15432.7s steps= 69120 eps= 32 W/L/T=18/14/0 rew=  -7.69 len= 40.3 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 3.1 lm= 2.1 es=+0.81 a=-0.003 cl=6.84 ent=0.838 lr=1.6e-04 best=  -6.50
+upd= 55/100 t=15602.2s steps= 70400 eps= 34 W/L/T=14/20/0 rew=  -9.44 len= 39.2 draw=0.55(pre.f=0.11 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.14 wm= 2.6 lm= 2.5 es=-0.38 a=-0.004 cl=7.44 ent=0.704 lr=1.5e-04 best=  -6.50
+upd= 56/100 t=15767.8s steps= 71680 eps= 30 W/L/T=9/21/0 rew= -11.22 len= 40.4 draw=0.54(pre.f=0.07 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.09 wm= 3.0 lm= 2.8 es=-1.07 a=-0.003 cl=6.16 ent=0.749 lr=1.5e-04 best=  -6.50
+upd= 57/100 t=15935.0s steps= 72960 eps= 35 W/L/T=15/20/0 rew=  -9.46 len= 39.3 draw=0.56(pre.f=0.11 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.14 wm= 1.6 lm= 2.5 es=-0.77 a=-0.003 cl=7.15 ent=0.718 lr=1.5e-04 best=  -6.50
+upd= 58/100 t=16088.5s steps= 74240 eps= 35 W/L/T=12/23/0 rew=  -9.53 len= 36.4 draw=0.53(pre.f=0.10 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.12 wm= 2.1 lm= 2.5 es=-0.94 a=-0.003 cl=6.99 ent=0.702 lr=1.5e-04 best=  -6.50
+upd= 59/100 t=16264.4s steps= 75520 eps= 32 W/L/T=18/14/0 rew=  -7.71 len= 40.4 draw=0.53(pre.f=0.09 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.12 wm= 2.0 lm= 2.3 es=+0.12 a=-0.003 cl=7.56 ent=0.749 lr=1.4e-04 best=  -6.50
+upd= 60/100 t=16451.9s steps= 76800 eps= 30 W/L/T=16/14/0 rew=  -8.04 len= 40.0 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.12 wm= 2.4 lm= 2.4 es=+0.17 a=-0.003 cl=6.77 ent=0.761 lr=1.4e-04 best=  -6.50
+  saved: rummikub_ppo_model_r7.pt
+upd= 61/100 t=16640.4s steps= 78080 eps= 33 W/L/T=19/14/0 rew=  -7.69 len= 40.4 draw=0.54(pre.f=0.06 pre.c=0.00 post.f=0.48 post.c=0.00) premeld=0.09 wm= 2.7 lm= 2.0 es=+0.73 a=-0.003 cl=7.43 ent=0.732 lr=1.4e-04 best=  -6.50
+upd= 62/100 t=16840.2s steps= 79360 eps= 29 W/L/T=13/16/0 rew=  -9.18 len= 40.8 draw=0.53(pre.f=0.06 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.08 wm= 2.0 lm= 2.8 es=-0.62 a=-0.004 cl=6.71 ent=0.814 lr=1.4e-04 best=  -6.50
+upd= 63/100 t=17025.6s steps= 80640 eps= 33 W/L/T=16/17/0 rew=  -9.02 len= 41.2 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.4 lm= 2.9 es=-0.36 a=-0.004 cl=7.58 ent=0.719 lr=1.3e-04 best=  -6.50
+upd= 64/100 t=17207.0s steps= 81920 eps= 31 W/L/T=15/16/0 rew=  -8.66 len= 40.7 draw=0.53(pre.f=0.09 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.11 wm= 2.6 lm= 2.1 es=+0.16 a=-0.003 cl=7.10 ent=0.787 lr=1.3e-04 best=  -6.50
+upd= 65/100 t=17388.5s steps= 83200 eps= 32 W/L/T=15/17/0 rew=  -8.83 len= 40.3 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.12 wm= 2.7 lm= 2.7 es=-0.16 a=-0.004 cl=8.00 ent=0.745 lr=1.3e-04 best=  -6.50
+upd= 66/100 t=17595.9s steps= 84480 eps= 31 W/L/T=15/16/0 rew=  -8.89 len= 41.0 draw=0.53(pre.f=0.06 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.09 wm= 1.9 lm= 2.4 es=-0.32 a=-0.003 cl=7.00 ent=0.751 lr=1.2e-04 best=  -6.50
+upd= 67/100 t=17776.5s steps= 85760 eps= 30 W/L/T=14/16/0 rew=  -8.83 len= 40.0 draw=0.54(pre.f=0.05 pre.c=0.00 post.f=0.48 post.c=0.00) premeld=0.07 wm= 2.4 lm= 2.5 es=-0.20 a=-0.004 cl=7.33 ent=0.767 lr=1.2e-04 best=  -6.50
+upd= 68/100 t=17952.1s steps= 87040 eps= 32 W/L/T=14/18/0 rew=  -9.52 len= 41.8 draw=0.54(pre.f=0.11 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.13 wm= 1.9 lm= 2.3 es=-0.44 a=-0.003 cl=6.83 ent=0.749 lr=1.2e-04 best=  -6.50
+upd= 69/100 t=18151.3s steps= 88320 eps= 34 W/L/T=13/21/0 rew=  -9.90 len= 40.3 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.11 wm= 2.1 lm= 1.9 es=-0.35 a=-0.004 cl=7.22 ent=0.767 lr=1.2e-04 best=  -6.50
+upd= 70/100 t=18309.4s steps= 89600 eps= 30 W/L/T=14/16/0 rew=  -8.48 len= 38.4 draw=0.55(pre.f=0.07 pre.c=0.00 post.f=0.48 post.c=0.00) premeld=0.10 wm= 3.1 lm= 2.8 es=-0.03 a=-0.003 cl=7.84 ent=0.689 lr=1.1e-04 best=  -6.50
+  saved: rummikub_ppo_model_r7.pt
+upd= 71/100 t=18512.1s steps= 90880 eps= 34 W/L/T=15/19/0 rew=  -9.24 len= 40.3 draw=0.55(pre.f=0.09 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.11 wm= 2.0 lm= 1.7 es=-0.09 a=-0.003 cl=7.65 ent=0.748 lr=1.1e-04 best=  -6.50
+upd= 72/100 t=18682.5s steps= 92160 eps= 33 W/L/T=20/13/0 rew=  -7.21 len= 39.6 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.11 wm= 2.1 lm= 2.7 es=+0.24 a=-0.004 cl=7.57 ent=0.753 lr=1.1e-04 best=  -6.50
+upd= 73/100 t=18858.5s steps= 93440 eps= 30 W/L/T=15/15/0 rew=  -8.68 len= 40.5 draw=0.54(pre.f=0.11 pre.c=0.00 post.f=0.43 post.c=0.00) premeld=0.13 wm= 2.7 lm= 2.6 es=+0.03 a=-0.003 cl=7.88 ent=0.743 lr=1.1e-04 best=  -6.50
+upd= 74/100 t=19046.8s steps= 94720 eps= 33 W/L/T=18/15/0 rew=  -8.09 len= 40.0 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.11 wm= 2.1 lm= 3.2 es=-0.30 a=-0.003 cl=6.69 ent=0.691 lr=1.0e-04 best=  -6.50
+upd= 75/100 t=19249.2s steps= 96000 eps= 30 W/L/T=12/18/0 rew= -10.13 len= 41.9 draw=0.55(pre.f=0.10 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.12 wm= 1.8 lm= 2.2 es=-0.57 a=-0.004 cl=6.95 ent=0.727 lr=1.0e-04 best=  -6.50
+upd= 76/100 t=19426.0s steps= 97280 eps= 33 W/L/T=20/13/0 rew=  -7.23 len= 40.0 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.6 lm= 2.7 es=+0.55 a=-0.003 cl=7.20 ent=0.716 lr=9.7e-05 best=  -6.50
+upd= 77/100 t=19610.9s steps= 98560 eps= 30 W/L/T=12/18/0 rew= -10.61 len= 43.0 draw=0.55(pre.f=0.10 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.13 wm= 2.2 lm= 2.8 es=-0.80 a=-0.003 cl=6.56 ent=0.756 lr=9.5e-05 best=  -6.50
+upd= 78/100 t=19792.2s steps= 99840 eps= 31 W/L/T=11/20/0 rew= -10.40 len= 40.3 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.6 lm= 2.5 es=-0.68 a=-0.003 cl=7.05 ent=0.728 lr=9.2e-05 best=  -6.50
+upd= 79/100 t=19962.0s steps=101120 eps= 33 W/L/T=10/23/0 rew= -10.71 len= 39.5 draw=0.54(pre.f=0.06 pre.c=0.00 post.f=0.48 post.c=0.00) premeld=0.09 wm= 2.3 lm= 2.7 es=-1.15 a=-0.003 cl=6.20 ent=0.708 lr=8.9e-05 best=  -6.50
+upd= 80/100 t=20141.2s steps=102400 eps= 30 W/L/T=13/17/0 rew=  -9.55 len= 41.6 draw=0.54(pre.f=0.07 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.09 wm= 2.3 lm= 2.1 es=-0.20 a=-0.002 cl=7.19 ent=0.751 lr=8.7e-05 best=  -6.50
+  saved: rummikub_ppo_model_r7.pt
+upd= 81/100 t=20316.2s steps=103680 eps= 31 W/L/T=11/20/0 rew= -10.48 len= 41.0 draw=0.55(pre.f=0.10 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.13 wm= 2.4 lm= 2.5 es=-0.77 a=-0.003 cl=6.03 ent=0.724 lr=8.4e-05 best=  -6.50
+upd= 82/100 t=20495.0s steps=104960 eps= 32 W/L/T=16/16/0 rew=  -8.77 len= 40.1 draw=0.54(pre.f=0.11 pre.c=0.00 post.f=0.43 post.c=0.00) premeld=0.14 wm= 2.2 lm= 2.9 es=-0.38 a=-0.004 cl=7.72 ent=0.716 lr=8.1e-05 best=  -6.50
+upd= 83/100 t=20679.2s steps=106240 eps= 31 W/L/T=13/18/0 rew=  -9.49 len= 39.9 draw=0.53(pre.f=0.06 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.09 wm= 1.8 lm= 2.2 es=-0.52 a=-0.002 cl=6.37 ent=0.744 lr=7.9e-05 best=  -6.50
+upd= 84/100 t=20854.5s steps=107520 eps= 33 W/L/T=13/20/0 rew=  -9.46 len= 39.6 draw=0.54(pre.f=0.11 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.13 wm= 2.3 lm= 2.3 es=-0.48 a=-0.003 cl=6.47 ent=0.652 lr=7.6e-05 best=  -6.50
+upd= 85/100 t=21070.6s steps=108800 eps= 31 W/L/T=18/13/0 rew=  -8.29 len= 42.6 draw=0.54(pre.f=0.12 pre.c=0.00 post.f=0.43 post.c=0.00) premeld=0.14 wm= 2.2 lm= 2.8 es=+0.10 a=-0.003 cl=8.06 ent=0.781 lr=7.3e-05 best=  -6.50
+upd= 86/100 t=21244.2s steps=110080 eps= 32 W/L/T=17/15/0 rew=  -7.89 len= 39.8 draw=0.54(pre.f=0.10 pre.c=0.00 post.f=0.43 post.c=0.00) premeld=0.13 wm= 2.1 lm= 1.8 es=+0.25 a=-0.003 cl=6.05 ent=0.695 lr=7.0e-05 best=  -6.50
+upd= 87/100 t=21432.8s steps=111360 eps= 33 W/L/T=13/20/0 rew=  -9.43 len= 38.9 draw=0.55(pre.f=0.11 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.14 wm= 2.9 lm= 2.1 es=-0.12 a=-0.003 cl=7.80 ent=0.687 lr=6.8e-05 best=  -6.50
+upd= 88/100 t=21608.0s steps=112640 eps= 33 W/L/T=12/21/0 rew=  -9.75 len= 39.1 draw=0.53(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.0 lm= 2.4 es=-0.79 a=-0.002 cl=7.13 ent=0.700 lr=6.5e-05 best=  -6.50
+upd= 89/100 t=21808.7s steps=113920 eps= 30 W/L/T=17/13/0 rew=  -7.80 len= 41.1 draw=0.54(pre.f=0.07 pre.c=0.00 post.f=0.47 post.c=0.00) premeld=0.09 wm= 2.4 lm= 2.3 es=+0.33 a=-0.003 cl=6.57 ent=0.734 lr=6.2e-05 best=  -6.50
+upd= 90/100 t=22023.8s steps=115200 eps= 30 W/L/T=12/18/0 rew= -10.09 len= 41.0 draw=0.55(pre.f=0.10 pre.c=0.00 post.f=0.44 post.c=0.00) premeld=0.13 wm= 1.7 lm= 2.3 es=-0.70 a=-0.002 cl=5.81 ent=0.766 lr=6.0e-05 best=  -6.50
+  saved: rummikub_ppo_model_r7.pt
+upd= 91/100 t=22214.3s steps=116480 eps= 32 W/L/T=18/14/0 rew=  -8.28 len= 41.5 draw=0.53(pre.f=0.07 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.10 wm= 2.0 lm= 3.1 es=-0.25 a=-0.002 cl=7.04 ent=0.723 lr=5.7e-05 best=  -6.50
+upd= 92/100 t=22432.7s steps=117760 eps= 32 W/L/T=12/20/0 rew= -10.19 len= 41.2 draw=0.54(pre.f=0.09 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 2.2 lm= 2.2 es=-0.56 a=-0.003 cl=6.89 ent=0.786 lr=5.4e-05 best=  -6.50
+upd= 93/100 t=22617.1s steps=119040 eps= 31 W/L/T=13/18/0 rew=  -9.21 len= 40.5 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.11 wm= 3.2 lm= 2.2 es=+0.03 a=-0.002 cl=7.91 ent=0.751 lr=5.2e-05 best=  -6.50
+upd= 94/100 t=22800.4s steps=120320 eps= 31 W/L/T=18/13/0 rew=  -8.16 len= 42.2 draw=0.54(pre.f=0.08 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.10 wm= 1.5 lm= 2.1 es=+0.00 a=-0.002 cl=7.30 ent=0.735 lr=4.9e-05 best=  -6.50
+upd= 95/100 t=22969.4s steps=121600 eps= 30 W/L/T=15/15/0 rew=  -8.61 len= 41.1 draw=0.55(pre.f=0.09 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.11 wm= 2.9 lm= 1.9 es=+0.50 a=-0.003 cl=8.07 ent=0.685 lr=4.6e-05 best=  -6.50
+upd= 96/100 t=23133.6s steps=122880 eps= 31 W/L/T=16/15/0 rew=  -8.28 len= 41.0 draw=0.52(pre.f=0.06 pre.c=0.00 post.f=0.46 post.c=0.00) premeld=0.08 wm= 2.6 lm= 2.2 es=+0.29 a=-0.002 cl=7.44 ent=0.735 lr=4.3e-05 best=  -6.50
+upd= 97/100 t=23321.6s steps=124160 eps= 34 W/L/T=16/18/0 rew=  -8.71 len= 39.6 draw=0.56(pre.f=0.10 pre.c=0.00 post.f=0.45 post.c=0.00) premeld=0.13 wm= 2.6 lm= 2.1 es=+0.12 a=-0.003 cl=7.24 ent=0.726 lr=4.1e-05 best=  -6.50
+upd= 98/100 t=23503.2s steps=125440 eps= 32 W/L/T=21/11/0 rew=  -5.89 len= 37.0 draw=0.53(pre.f=0.06 pre.c=0.00 post.f=0.47 post.c=0.01) premeld=0.08 wm= 2.5 lm= 2.3 es=+0.84 a=-0.003 cl=8.21 ent=0.708 lr=3.8e-05 best=  -5.89
+upd= 99/100 t=23679.1s steps=126720 eps= 34 W/L/T=16/18/0 rew=  -8.91 len= 40.1 draw=0.54(pre.f=0.06 pre.c=0.00 post.f=0.48 post.c=0.00) premeld=0.09 wm= 2.9 lm= 3.1 es=-0.24 a=-0.002 cl=8.22 ent=0.742 lr=3.5e-05 best=  -5.89
+upd=100/100 t=24523.5s steps=128000 eps= 31 W/L/T=12/19/0 rew= -10.10 len= 41.6 draw=0.55(pre.f=0.06 pre.c=0.00 post.f=0.48 post.c=0.00) premeld=0.09 wm= 2.2 lm= 2.1 es=-0.42 a=-0.002 cl=6.59 ent=0.712 lr=3.3e-05 best=  -5.89
+  saved: rummikub_ppo_model_r7.pt
+
+done. log: train_log_r7.csv, model: rummikub_ppo_model_r7.pt, best: rummikub_ppo_best_r7.pt
