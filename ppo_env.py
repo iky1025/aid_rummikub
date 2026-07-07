@@ -42,6 +42,7 @@ class RummikubPPOEnv(gym.Env):
         opponent="ilp",
         alternate_first_player=False,
         initial_meld_value=0,
+        exhaustive_candidates=False,
     ):
         super().__init__()
         self.max_candidates = max_candidates
@@ -56,6 +57,8 @@ class RummikubPPOEnv(gym.Env):
         self._next_ppo_player = ppo_player
         # R7: initial meld threshold (Rummikub house rule). 0 disables.
         self.initial_meld_value = initial_meld_value
+        # R9: exhaustive move enumeration for the PPO player's candidates.
+        self.exhaustive_candidates = exhaustive_candidates
         self.first_meld_done = [False, False]
         # separate RNG so opponent randomness doesn't perturb env shuffles
         self.opponent_random = random.Random(
@@ -87,6 +90,7 @@ class RummikubPPOEnv(gym.Env):
         self.hands = [[], []]
         self.last_candidates = []
         self._last_candidate_count = 0
+        self.opponent_events = []
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -102,6 +106,9 @@ class RummikubPPOEnv(gym.Env):
 
         self.env.reset(table_sets=[], shuffle=True)
         self.first_meld_done = [False, False]
+        # R9: public record of opponent turns, for information-consistent
+        # determinization (each draw is a constraint on their hidden hand).
+        self.opponent_events = []
 
         # Deal tiles. Position 0 always gets the first 14 dealt, position 1 the next 14.
         pos0_hand = list(self.env.hand)
@@ -142,6 +149,13 @@ class RummikubPPOEnv(gym.Env):
         used = 0
         won = False
 
+        # R9: snapshot public state BEFORE the opponent acts.
+        event = {
+            "table": [list(s) for s in self.env.table_sets],
+            "pre_meld": not self.first_meld_done[self.ilp_player],
+            "hand_before": len(self.hands[self.ilp_player]),
+        }
+
         if self.opponent_type == "ilp":
             r = self.env.solve_best_move(
                 min_play_value=min_val, ignore_table=ignore_tbl,
@@ -173,6 +187,10 @@ class RummikubPPOEnv(gym.Env):
                 self.env.draw_tile()
 
         self.hands[self.ilp_player] = list(self.env.hand)
+
+        event["drew"] = used == 0
+        event["hand_after"] = len(self.hands[self.ilp_player])
+        self.opponent_events.append(event)
         return used, won
 
     def step(self, action):
@@ -189,26 +207,25 @@ class RummikubPPOEnv(gym.Env):
         candidates = self.last_candidates
         if not candidates:
             min_val, ignore_tbl = self._meld_params(self.ppo_player)
-            candidates = self.env.solve_candidate_moves(
-                max_candidates=self.max_candidates,
-                min_play_value=min_val,
-                ignore_table=ignore_tbl,
-            )[: self.max_candidates]
+            candidates = self._generate_candidates(min_val, ignore_tbl)
             self.last_candidates = candidates
 
-        ppo_is_initial = not self.first_meld_done[self.ppo_player]
+        # append_to_table must match the ignore_table mode the candidates were
+        # generated with. With initial_meld_value=0 candidates always rearrange
+        # the whole table (ignore_table=False), so they must REPLACE it —
+        # appending would duplicate table tiles.
+        _, ppo_ignore_tbl = self._meld_params(self.ppo_player)
 
         if action < len(candidates):
             result = candidates[action]
-            self.env.apply_solution(result, append_to_table=ppo_is_initial)
+            self.env.apply_solution(result, append_to_table=ppo_ignore_tbl)
             reward += 0.1 * result.used_hand_tile_count
             self.first_meld_done[self.ppo_player] = True
             if len(self.env.hand) == 0:
                 ilp_remaining = len(self.hands[self.ilp_player])
                 reward += 5.0 + 0.3 * ilp_remaining
                 self.hands[self.ppo_player] = list(self.env.hand)
-                self.last_candidates = []
-                obs = self._compute_obs()
+                obs = self._terminal_obs()
                 info = self._build_info(len(candidates), 0)
                 info["outcome"] = "win"
                 info["win_margin"] = ilp_remaining
@@ -235,8 +252,7 @@ class RummikubPPOEnv(gym.Env):
         if ilp_done:
             ppo_remaining = len(self.hands[self.ppo_player])
             reward -= 5.0 + 0.3 * ppo_remaining
-            self.last_candidates = []
-            obs = self._compute_obs()
+            obs = self._terminal_obs()
             info = self._build_info(len(candidates), ilp_used_hand_tiles)
             info["outcome"] = "loss"
             info["win_margin"] = 0
@@ -264,17 +280,18 @@ class RummikubPPOEnv(gym.Env):
             info["loss_margin"] = max(0, ppo_remaining - ilp_remaining)
         return obs, reward, terminated, truncated, info
 
-    def _compute_obs(self):
-        """Compute the full Dict observation. Triggers ILP candidate generation."""
-        self._sync_env_hand(self.ppo_player)
-        min_val, ignore_tbl = self._meld_params(self.ppo_player)
-        self.last_candidates = self.env.solve_candidate_moves(
-            max_candidates=self.max_candidates,
-            min_play_value=min_val,
-            ignore_table=ignore_tbl,
-        )[: self.max_candidates]
-        self._last_candidate_count = len(self.last_candidates)
+    def _terminal_obs(self):
+        """Observation for a terminated episode. The episode is over, so the
+        candidate list is never used — skip the expensive ILP calls entirely."""
+        self.last_candidates = []
+        self._last_candidate_count = 0
+        state = self._state_vector()
+        cand_feats = np.zeros((self.max_candidates, CAND_FEAT_DIM), dtype=np.float32)
+        mask = np.zeros(self.max_candidates + 1, dtype=np.float32)
+        mask[self.max_candidates] = 1.0
+        return {"state": state, "cand_feats": cand_feats, "mask": mask}
 
+    def _state_vector(self):
         hand_vector = self.tiles_to_vector(self.hands[self.ppo_player])
         table_tiles = flatten(self.env.table_sets)
         table_vector = self.tiles_to_vector(table_tiles)
@@ -289,9 +306,29 @@ class RummikubPPOEnv(gym.Env):
             ],
             dtype=np.float32,
         )
-        state = np.concatenate(
+        return np.concatenate(
             [hand_vector, table_vector, deck_count, ilp_hand_norm, meld_flags]
         ).astype(np.float32)
+
+    def _generate_candidates(self, min_val, ignore_tbl):
+        if self.exhaustive_candidates:
+            gen = self.env.enumerate_candidate_moves
+        else:
+            gen = self.env.solve_candidate_moves
+        return gen(
+            max_candidates=self.max_candidates,
+            min_play_value=min_val,
+            ignore_table=ignore_tbl,
+        )[: self.max_candidates]
+
+    def _compute_obs(self):
+        """Compute the full Dict observation. Triggers ILP candidate generation."""
+        self._sync_env_hand(self.ppo_player)
+        min_val, ignore_tbl = self._meld_params(self.ppo_player)
+        self.last_candidates = self._generate_candidates(min_val, ignore_tbl)
+        self._last_candidate_count = len(self.last_candidates)
+
+        state = self._state_vector()
 
         cand_feats = np.zeros((self.max_candidates, CAND_FEAT_DIM), dtype=np.float32)
         mask = np.zeros(self.max_candidates + 1, dtype=np.float32)

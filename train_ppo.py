@@ -138,10 +138,13 @@ def train(args):
         "avg_candidate_count",
         "avg_win_margin", "avg_loss_margin", "expected_score",
         "actor_loss", "critic_loss", "entropy",
-        "lr", "best_avg_reward",
+        "lr", "best_expected_score",
     ])
 
-    best_avg_reward = -float("inf")
+    # R8: best checkpoint is picked by expected_score (win/loss margin), not
+    # avg_reward — avg_reward is dominated by uncontrollable forced-draw
+    # penalties, so it mostly measures deal luck.
+    best_expected_score = -float("inf")
     steps_total = 0
     train_start = time.time()
 
@@ -355,8 +358,8 @@ def train(args):
         current_lr = lr_scheduler.get_last_lr()[0]
         lr_scheduler.step()
 
-        if avg_reward > best_avg_reward and episodes > 0:
-            best_avg_reward = avg_reward
+        if expected_score > best_expected_score and episodes > 0:
+            best_expected_score = expected_score
             torch.save(model.state_dict(), best_path)
 
         print(
@@ -371,7 +374,7 @@ def train(args):
             f"premeld={pre_meld_ratio:.2f} "
             f"wm={avg_win_margin:4.1f} lm={avg_loss_margin:4.1f} es={expected_score:+.2f} "
             f"a={avg_actor_loss:+.3f} cl={avg_critic_loss:.2f} ent={avg_entropy:.3f} "
-            f"lr={current_lr:.1e} best={best_avg_reward:7.2f}"
+            f"lr={current_lr:.1e} best_es={best_expected_score:+.2f}"
         )
 
         log_writer.writerow([
@@ -385,7 +388,7 @@ def train(args):
             f"{avg_candidate_count:.2f}",
             f"{avg_win_margin:.2f}", f"{avg_loss_margin:.2f}", f"{expected_score:.2f}",
             f"{avg_actor_loss:.4f}", f"{avg_critic_loss:.4f}", f"{avg_entropy:.4f}",
-            f"{current_lr:.2e}", f"{best_avg_reward:.3f}",
+            f"{current_lr:.2e}", f"{best_expected_score:.3f}",
         ])
         log_file.flush()
 

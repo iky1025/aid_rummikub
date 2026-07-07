@@ -1,4 +1,5 @@
 import random
+from collections import Counter
 from typing import Optional, Sequence
 
 from rummikub_solver import (
@@ -113,6 +114,23 @@ class RummikubEnv:
             ignore_table=ignore_table,
         )
 
+    def enumerate_candidate_moves(self, max_candidates=20, min_play_value=0, ignore_table=False):
+        """R9: exhaustive move list (all playable hand-multisets). Falls back
+        to solve_many when the subset space is too large."""
+        moves = self.solver.enumerate_moves(
+            hand_tiles=self.hand,
+            table_sets=self.table_sets,
+            min_play_value=min_play_value,
+            ignore_table=ignore_table,
+        )
+        if moves is None:
+            return self.solve_candidate_moves(
+                max_candidates=max_candidates,
+                min_play_value=min_play_value,
+                ignore_table=ignore_table,
+            )
+        return moves[:max_candidates]
+
     def apply_solution(self, result, append_to_table=False):
         """Apply ILP result.
 
@@ -135,6 +153,15 @@ class RummikubEnv:
                 self.table_sets.append(list(selected_set.completed_tiles))
 
         self.hand = list(result.remaining_hand)
+
+        # Guard against table-tile duplication (e.g. appending a full
+        # rearrangement instead of replacing the table).
+        counts = Counter(flatten(self.table_sets)) + Counter(self.hand)
+        worst = max(counts.values(), default=0)
+        if worst > COPIES_PER_TILE:
+            raise RuntimeError(
+                f"tile duplicated after apply_solution (count={worst})"
+            )
         return self.get_state()
 
     def render(self):
