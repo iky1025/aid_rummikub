@@ -178,6 +178,9 @@ def main():
     parser.add_argument("--endgame-search", action="store_true")
     parser.add_argument("--search-nodes", type=int, default=200)
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--recycle-after", type=int, default=25,
+                        help="restart each worker process after this many "
+                             "pairs (bounds slow memory growth)")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -192,7 +195,11 @@ def main():
     total = 0
     if args.workers > 1:
         from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=args.workers) as ex:
+        # Recycle each worker after N pairs — long-lived Python workers slowly
+        # grow their RSS over hours, which got the whole run jetsam-killed on
+        # a 16GB machine (2026-07-09). Recycling bounds per-worker memory.
+        with ProcessPoolExecutor(max_workers=args.workers,
+                                 max_tasks_per_child=args.recycle_after) as ex:
             for i, n in enumerate(ex.map(_pair_worker,
                                          [(args, s) for s in todo])):
                 total += n
