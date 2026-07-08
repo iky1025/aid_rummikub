@@ -195,19 +195,26 @@ def main():
     total = 0
     if args.workers > 1:
         from concurrent.futures import ProcessPoolExecutor
-        # Recycle each worker after N pairs — long-lived Python workers slowly
-        # grow their RSS over hours, which got the whole run jetsam-killed on
-        # a 16GB machine (2026-07-09). Recycling bounds per-worker memory.
-        with ProcessPoolExecutor(max_workers=args.workers,
-                                 max_tasks_per_child=args.recycle_after) as ex:
-            for i, n in enumerate(ex.map(_pair_worker,
-                                         [(args, s) for s in todo])):
-                total += n
-                if (i + 1) % 50 == 0:
-                    rate = (i + 1) / (time.time() - t0)
-                    eta = (len(todo) - i - 1) / rate
-                    print(f"  {i + 1}/{len(todo)} pairs, {total} decisions, "
-                          f"ETA {eta / 60:.0f}min", flush=True)
+        # Long-lived Python workers slowly grow their RSS over hours, which
+        # got a run jetsam-killed on a 16GB machine. Bound that by replacing
+        # the whole pool every `workers * recycle_after` pairs. (Per-worker
+        # max_tasks_per_child deadlocked when all workers hit the recycle
+        # boundary at once — run stalled at exactly workers*recycle_after
+        # pairs, 2026-07-09.)
+        chunk = args.workers * args.recycle_after
+        done_count = 0
+        for c0 in range(0, len(todo), chunk):
+            block = todo[c0:c0 + chunk]
+            with ProcessPoolExecutor(max_workers=args.workers) as ex:
+                for n in ex.map(_pair_worker, [(args, s) for s in block]):
+                    total += n
+                    done_count += 1
+                    if done_count % 50 == 0:
+                        rate = done_count / (time.time() - t0)
+                        eta = (len(todo) - done_count) / rate
+                        print(f"  {done_count}/{len(todo)} pairs, "
+                              f"{total} decisions, ETA {eta / 60:.0f}min",
+                              flush=True)
     else:
         for i, s in enumerate(todo):
             total += _pair_worker((args, s))
