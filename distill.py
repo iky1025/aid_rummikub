@@ -28,11 +28,19 @@ def load_dataset(data_dir):
     files = sorted(glob.glob(os.path.join(data_dir, "pair_*.npz")))
     if not files:
         raise SystemExit(f"no pair_*.npz files in {data_dir}")
+    # Older datasets predate the teacher-evaluation fields — pad with NaN so
+    # old and new shards can be mixed in one run.
+    optional = ("cand_scores", "cand_votes")
     parts = {}
     for f in files:
         with np.load(f) as z:
+            n = len(z["action"])
             for k in z.files:
                 parts.setdefault(k, []).append(z[k])
+            for k in optional:
+                if k not in z.files:
+                    parts.setdefault(k, []).append(
+                        np.full((n, 21), np.nan, dtype=np.float32))
     data = {k: np.concatenate(v) for k, v in parts.items()}
     n = len(data["action"])
     print(f"loaded {n} decisions from {len(files)} pairs "
@@ -61,6 +69,48 @@ def to_tensors(data, idx, device):
     opp = torch.tensor(data["opp_hand"][idx], dtype=torch.float32,
                        device=device) / 2.0
     return state, cand, mask, action, opp
+
+
+SCORE_SCALE = 50.0  # rollout WIN_SCORE; brings scores to roughly [-1.5, 1.5]
+
+
+def imitation_loss(logits, mask, action, scores, args):
+    """Per-row loss combining three signals (R10, post-literature-review):
+
+    - soft CE on the teacher's per-candidate rollout scores (softmax at
+      --soft-temp) where the teacher evaluated >=2 options — carries the
+      *margin* of a deviation instead of just its argmax;
+    - one-hot CE (with --dev-weight) on rows without evaluations;
+    - masked value regression (--value-coef) tying all evaluated options,
+      including draw vs play, to one calibrated scale.
+    """
+    masked = logits.masked_fill(mask == 0, -1e9)
+    labeled = ~torch.isnan(scores) & (mask > 0)
+    n_labeled = labeled.sum(dim=1)
+
+    ce = F.cross_entropy(masked, action, reduction="none")
+    if args.dev_weight > 0:
+        w = 1.0 + args.dev_weight * (action != 0).float()
+        onehot_loss = ce * w / w.mean()
+    else:
+        onehot_loss = ce
+
+    if args.soft_temp > 0:
+        target_logits = (scores.nan_to_num(-1e9) / SCORE_SCALE
+                         ) / args.soft_temp
+        target_logits = target_logits.masked_fill(~labeled, -1e9)
+        target = torch.softmax(target_logits, dim=1)
+        soft_loss = -(target * F.log_softmax(masked, dim=1)).sum(dim=1)
+        use_soft = (n_labeled >= 2).float()
+        row_loss = use_soft * soft_loss + (1 - use_soft) * onehot_loss
+    else:
+        row_loss = onehot_loss
+
+    loss = row_loss.mean()
+    if args.value_coef > 0 and labeled.any():
+        err = (logits - scores.nan_to_num(0.0) / SCORE_SCALE) ** 2
+        loss = loss + args.value_coef * err[labeled].mean()
+    return loss, ce
 
 
 def evaluate(model, data, mask_idx, device, batch_size=2048):
@@ -96,6 +146,12 @@ def main():
                              "deviated from greedy (w = 1 + dev_weight)")
     parser.add_argument("--aux-coef", type=float, default=0.0,
                         help="weight of the opponent-hand MSE auxiliary loss")
+    parser.add_argument("--soft-temp", type=float, default=0.0,
+                        help=">0: soft CE against softmax(teacher rollout "
+                             "scores / temp) on rows with >=2 evaluations")
+    parser.add_argument("--value-coef", type=float, default=0.0,
+                        help=">0: masked MSE regression of logits to teacher "
+                             "scores / 50 on evaluated entries")
     parser.add_argument("--max-candidates", type=int, default=20)
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--device", default=None)
@@ -108,6 +164,13 @@ def main():
                               else "cpu")
 
     data = load_dataset(args.data)
+    # Unify the two teacher-evaluation channels into one score matrix:
+    # rollout scores as-is; endgame win-forcing vote fractions scaled to the
+    # same units (fraction x WIN_SCORE ~ forced-win expected value).
+    merged = np.where(np.isnan(data["cand_scores"]),
+                      data["cand_votes"] * SCORE_SCALE,
+                      data["cand_scores"]).astype(np.float32)
+    data["scores_merged"] = merged
     train_mask, val_mask = make_split(data, args.val_frac)
     train_idx = np.flatnonzero(train_mask)
     dev_frac = float((data["action"][train_idx] != 0).mean())
@@ -134,14 +197,10 @@ def main():
         for s in range(0, len(order), args.batch_size):
             batch = order[s:s + args.batch_size]
             state, cand, mask, action, opp = to_tensors(data, batch, device)
+            scores = torch.tensor(data["scores_merged"][batch],
+                                  dtype=torch.float32, device=device)
             logits = model.forward_actor(state, cand)
-            logits = logits.masked_fill(mask == 0, -1e9)
-            ce = F.cross_entropy(logits, action, reduction="none")
-            if args.dev_weight > 0:
-                w = 1.0 + args.dev_weight * (action != 0).float()
-                loss = (ce * w).sum() / w.sum()
-            else:
-                loss = ce.mean()
+            loss, ce = imitation_loss(logits, mask, action, scores, args)
             if args.aux_coef > 0:
                 aux = F.mse_loss(model.forward_aux(state), opp)
                 loss = loss + args.aux_coef * aux

@@ -74,6 +74,7 @@ def make_teacher(args):
         )
         def teacher(env, obs):
             return rollout.select_action(env)
+        teacher.rollout = rollout
         return teacher
 
     raise ValueError(f"unknown teacher: {args.teacher}")
@@ -102,12 +103,25 @@ def play_game(teacher, seed, seat, args):
     done = False
     info = {}
     turn = 0
+    n_actions = args.max_candidates + 1
     while not done:
         n_cands = len(env.last_candidates)
         if n_cands > 0:
             action = teacher(env, obs)
+            # R10: teacher's per-candidate evaluations (rollout avg scores /
+            # endgame win-forcing vote fractions), NaN where not evaluated.
+            cand_scores = np.full(n_actions, np.nan, dtype=np.float32)
+            cand_votes = np.full(n_actions, np.nan, dtype=np.float32)
+            ev = getattr(getattr(teacher, "rollout", None), "last_eval", None)
+            if ev is not None:
+                for i, s in (ev["scores"] or {}).items():
+                    cand_scores[i] = s
+                for i, v in (ev["votes"] or {}).items():
+                    cand_votes[i] = v
             opp_hand = env.tiles_to_vector(env.hands[env.ilp_player]) * 2.0
             records.append({
+                "cand_scores": cand_scores,
+                "cand_votes": cand_votes,
                 "state": obs["state"].astype(np.float32),
                 "cand_feats": np.rint(obs["cand_feats"] * 2.0).astype(np.uint8),
                 "mask": obs["mask"].astype(np.uint8),

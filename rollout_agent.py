@@ -85,6 +85,11 @@ class RolloutPolicy:
         self.search_hand_trigger = search_hand_trigger
         self.rng = random.Random(seed)
         self.solver = RummikubILPSolver()
+        # R10: per-decision evaluation record for distillation targets.
+        # After select_action returns, holds None (nothing was evaluated) or
+        # {"scores": {cand_idx: avg rollout score}, "votes": {action: frac},
+        #  "n_det": k}. "votes" uses env.max_candidates as the draw action.
+        self.last_eval = None
 
     def select_action(self, env):
         """Pick an action for RummikubPPOEnv `env` on the PPO player's turn.
@@ -92,6 +97,7 @@ class RolloutPolicy:
         Uses only public information: own hand, table, opponent hand COUNT,
         deck COUNT. Hidden tiles are sampled, never read from env.env.deck.
         """
+        self.last_eval = None
         candidates = env.last_candidates
         if not candidates:
             return env.max_candidates  # forced draw
@@ -201,6 +207,20 @@ class RolloutPolicy:
                     opp_meld_done=opp_meld_done,
                     initial_meld_value=initial_meld_value,
                 )
+
+        # Record avg scores for distillation targets, propagated to candidates
+        # that were deduped away (same remaining hand => same score).
+        n_det = len(determinizations)
+        chosen_score = {}
+        for j, ci in enumerate(chosen):
+            key = self._mkey(candidates[ci].remaining_hand)
+            chosen_score[key] = scores[j] / n_det
+        score_map = {}
+        for i, result in enumerate(candidates):
+            key = self._mkey(result.remaining_hand)
+            if key in chosen_score:
+                score_map[i] = chosen_score[key]
+        self.last_eval = {"scores": score_map, "votes": None, "n_det": n_det}
 
         best_j = max(range(len(chosen)), key=lambda j: scores[j])
         # chosen[0] is always the greedy max-play; scores are paired (same
@@ -331,6 +351,21 @@ class RolloutPolicy:
                 initial_meld_value, [self.search_nodes], {},
             ):
                 votes[-1] += 1
+
+        # Record win-forcing vote fractions for distillation targets (draw is
+        # keyed as env.max_candidates), propagated to deduped-away candidates.
+        n_det = len(determinizations)
+        chosen_vote = {
+            self._mkey(candidates[ci].remaining_hand): votes[j] / n_det
+            for j, ci in enumerate(chosen)
+        }
+        vote_map = {
+            i: chosen_vote[self._mkey(r.remaining_hand)]
+            for i, r in enumerate(candidates)
+            if self._mkey(r.remaining_hand) in chosen_vote
+        }
+        vote_map[env.max_candidates] = votes[-1] / n_det
+        self.last_eval = {"scores": None, "votes": vote_map, "n_det": n_det}
 
         best = max(votes)
         if best == 0:
