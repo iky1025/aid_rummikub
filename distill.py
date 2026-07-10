@@ -62,6 +62,9 @@ def make_split(data, val_frac=0.1):
 
 def to_tensors(data, idx, device):
     state = torch.tensor(data["state"][idx], dtype=torch.float32, device=device)
+    if "state_ext" in data:
+        state = torch.tensor(data["state_ext"][idx], dtype=torch.float32,
+                             device=device)
     cand = torch.tensor(data["cand_feats"][idx], dtype=torch.float32,
                         device=device) / 2.0
     mask = torch.tensor(data["mask"][idx], dtype=torch.float32, device=device)
@@ -72,6 +75,23 @@ def to_tensors(data, idx, device):
 
 
 SCORE_SCALE = 50.0  # rollout WIN_SCORE; brings scores to roughly [-1.5, 1.5]
+
+EVENT_FEAT_DIM = 6 * 4  # selfplay_data.EVENT_HISTORY_LEN x (drew, before, after, pre_meld)
+
+
+def event_feats(events):
+    """(N, 6, 4) int16 opponent-event history -> (N, 24) float features.
+
+    Columns: drew (0/1), hand_before/14, hand_after/14, pre_meld (0/1);
+    -1 padding rows are zeroed. The teacher's consistent determinization
+    reads exactly this history — without it part of the teacher's deviations
+    is unlearnable from the observation (imitation gap)."""
+    f = events.astype(np.float32)
+    pad = f[..., 0] < 0
+    f[..., 1] /= 14.0
+    f[..., 2] /= 14.0
+    f[pad] = 0.0
+    return f.reshape(len(f), -1)
 
 
 def imitation_loss(logits, mask, action, scores, args):
@@ -152,6 +172,9 @@ def main():
     parser.add_argument("--value-coef", type=float, default=0.0,
                         help=">0: masked MSE regression of logits to teacher "
                              "scores / 50 on evaluated entries")
+    parser.add_argument("--history", action="store_true",
+                        help="append opponent-event history features (24d) "
+                             "to the state input")
     parser.add_argument("--max-candidates", type=int, default=20)
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--device", default=None)
@@ -171,6 +194,11 @@ def main():
                       data["cand_votes"] * SCORE_SCALE,
                       data["cand_scores"]).astype(np.float32)
     data["scores_merged"] = merged
+    obs_dim = STATE_DIM
+    if args.history:
+        data["state_ext"] = np.concatenate(
+            [data["state"], event_feats(data["events"])], axis=1)
+        obs_dim = data["state_ext"].shape[1]
     train_mask, val_mask = make_split(data, args.val_frac)
     train_idx = np.flatnonzero(train_mask)
     dev_frac = float((data["action"][train_idx] != 0).mean())
@@ -178,7 +206,7 @@ def main():
           f"deviation fraction {dev_frac:.3f}", flush=True)
 
     model = DistillStudent(
-        obs_dim=STATE_DIM,
+        obs_dim=obs_dim,
         cand_feat_dim=CAND_FEAT_DIM,
         max_candidates=args.max_candidates,
     ).to(device)

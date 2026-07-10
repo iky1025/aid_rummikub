@@ -1,0 +1,4 @@
+pairs: 1000 requested, 168 to generate (832 already on disk)
+  50/168 pairs, 1902 decisions, ETA 80min
+/opt/homebrew/Caskroom/miniconda/base/envs/rummikub/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 5 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

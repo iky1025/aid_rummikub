@@ -1,0 +1,9 @@
+=== s1s_t03_v05 ===
+win_rate        : 28.7%
+pair patterns   : {'LL': 16, 'LT': 1, 'LW': 13, 'TL': 2, 'TW': 1, 'WL': 4, 'WT': 1, 'WW': 2}
+mean pair net   : -9.12 ± 1.88 (SE)  [>0 means better than greedy]
+=== s1s_t03_v2 ===
+win_rate        : 25.0%
+pair patterns   : {'LL': 14, 'LT': 3, 'LW': 9, 'TL': 3, 'TT': 2, 'TW': 2, 'WL': 5, 'WW': 2}
+mean pair net   : -18.88 ± 2.92 (SE)  [>0 means better than greedy]
+S1S-SMOKE-DONE

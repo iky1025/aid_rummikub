@@ -1,0 +1,10 @@
+=== s1s_t03_v05 margin=0.02 ===
+win_rate        : 32.5%
+mean pair net   : -7.88 ± 1.80 (SE)  [>0 means better than greedy]
+=== s1s_t03_v05 margin=0.06 ===
+win_rate        : 38.8%
+mean pair net   : -5.72 ± 1.81 (SE)  [>0 means better than greedy]
+=== s1s_t03_v05 margin=0.15 ===
+win_rate        : 43.8%
+mean pair net   : -2.67 ± 1.33 (SE)  [>0 means better than greedy]
+MARGIN-SMOKE-DONE

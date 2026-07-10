@@ -1,0 +1,17 @@
+=== s1_dw0_aux0 ===
+win_rate        : 13.8%
+pair patterns   : {'LL': 15, 'LT': 5, 'LW': 6, 'TL': 6, 'TT': 3, 'TW': 1, 'WL': 4}
+mean pair net   : -27.93 ± 2.77 (SE)  [>0 means better than greedy]
+=== s1_dw0_aux0.5 ===
+win_rate        : 17.5%
+pair patterns   : {'LL': 12, 'LT': 3, 'LW': 7, 'TL': 6, 'TT': 5, 'TW': 3, 'WL': 4}
+mean pair net   : -26.50 ± 2.91 (SE)  [>0 means better than greedy]
+=== s1_dw2_aux0 ===
+win_rate        : 8.8%
+pair patterns   : {'LL': 12, 'LT': 8, 'LW': 5, 'TL': 7, 'TT': 6, 'TW': 1, 'WL': 1}
+mean pair net   : -35.08 ± 2.81 (SE)  [>0 means better than greedy]
+=== s1_dw2_aux0.5 ===
+win_rate        : 8.8%
+pair patterns   : {'LL': 15, 'LT': 8, 'LW': 1, 'TL': 5, 'TT': 5, 'TW': 4, 'WT': 2}
+mean pair net   : -36.40 ± 2.43 (SE)  [>0 means better than greedy]
+=== s1_dw8_aux0 ===

@@ -65,11 +65,18 @@ def make_policy(args):
         return policy
 
     if args.policy == "student":
+        import numpy as np_
         import torch
         from ppo_model import DistillStudent
 
+        obs_dim = obs_dim_from_env()
+        if args.student_history:
+            from distill import EVENT_FEAT_DIM, event_feats
+            from selfplay_data import _event_history
+            obs_dim += EVENT_FEAT_DIM
+
         model = DistillStudent(
-            obs_dim=obs_dim_from_env(),
+            obs_dim=obs_dim,
             cand_feat_dim=52 + 52,
             max_candidates=max_candidates,
         )
@@ -78,8 +85,14 @@ def make_policy(args):
         model.load_state_dict(state_dict)
         model.eval()
 
+        margin = args.student_margin
+
         def policy(env, obs):
-            state_t = torch.tensor(obs["state"], dtype=torch.float32)
+            state = obs["state"]
+            if args.student_history:
+                ev = event_feats(_event_history(env)[None])
+                state = np_.concatenate([state, ev[0]]).astype(np_.float32)
+            state_t = torch.tensor(state, dtype=torch.float32)
             cand_t = torch.tensor(obs["cand_feats"], dtype=torch.float32)
             mask_t = torch.tensor(obs["mask"], dtype=torch.float32)
             with torch.no_grad():
@@ -87,7 +100,15 @@ def make_policy(args):
                     state_t.unsqueeze(0), cand_t.unsqueeze(0)
                 ).squeeze(0)
             logits[mask_t == 0] = -1e9
-            return int(torch.argmax(logits).item())
+            best = int(torch.argmax(logits).item())
+            # R10: same winner's-curse guard that saved the rollout teacher
+            # (v1 -> v2): stick with the greedy max-play (candidate 0) unless
+            # the student's own predicted margin clears the threshold. Only
+            # meaningful for value-trained students (logits in score units).
+            if margin > 0 and mask_t[0] > 0 and best != 0 \
+                    and float(logits[best] - logits[0]) <= margin:
+                return 0
+            return best
         if args.endgame_search:
             policy = _wrap_endgame(policy, args)
         return policy
@@ -221,6 +242,13 @@ def main():
     parser.add_argument("--consistent", action="store_true",
                         help="rollout: information-consistent determinization "
                              "(reject samples contradicting opponent draw history)")
+    parser.add_argument("--student-history", action="store_true",
+                        help="student was trained with --history (opponent-"
+                             "event features appended to state)")
+    parser.add_argument("--student-margin", type=float, default=0.0,
+                        help="student: deviate from the greedy max-play only "
+                             "when its predicted score margin exceeds this "
+                             "(value-trained logits, /50 score units)")
     parser.add_argument("--greedy-margin", type=float, default=0.0,
                         help="rollout: stick with greedy unless another "
                              "candidate wins by more than this per-rollout margin")
