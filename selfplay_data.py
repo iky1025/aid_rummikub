@@ -80,6 +80,48 @@ def make_teacher(args):
     raise ValueError(f"unknown teacher: {args.teacher}")
 
 
+def make_student_actor(args):
+    """R10 DAgger: the STUDENT plays the game (visiting its own state
+    distribution, including the states its mistakes create) while the teacher
+    only labels. Mirrors eval_mirror's student policy incl. the margin gate
+    and optional history features."""
+    import torch
+    from distill import EVENT_FEAT_DIM, event_feats
+    from ppo_env import CAND_FEAT_DIM, STATE_DIM
+    from ppo_model import DistillStudent
+
+    obs_dim = STATE_DIM + (EVENT_FEAT_DIM if args.actor_history else 0)
+    model = DistillStudent(
+        obs_dim=obs_dim,
+        cand_feat_dim=CAND_FEAT_DIM,
+        max_candidates=args.max_candidates,
+    )
+    model.load_state_dict(
+        torch.load(args.actor_model, map_location="cpu", weights_only=True))
+    model.eval()
+    margin = args.actor_margin
+
+    def actor(env, obs):
+        state = obs["state"]
+        if args.actor_history:
+            state = np.concatenate(
+                [state, event_feats(_event_history(env)[None])[0]]
+            ).astype(np.float32)
+        state_t = torch.tensor(state, dtype=torch.float32)
+        cand_t = torch.tensor(obs["cand_feats"], dtype=torch.float32)
+        mask_t = torch.tensor(obs["mask"], dtype=torch.float32)
+        with torch.no_grad():
+            logits = model.forward_actor(
+                state_t.unsqueeze(0), cand_t.unsqueeze(0)).squeeze(0)
+        logits[mask_t == 0] = -1e9
+        best = int(torch.argmax(logits).item())
+        if margin > 0 and mask_t[0] > 0 and best != 0 \
+                and float(logits[best] - logits[0]) <= margin:
+            return 0
+        return best
+    return actor
+
+
 def _event_history(env):
     out = np.full((EVENT_HISTORY_LEN, 4), -1, dtype=np.int16)
     events = env.opponent_events[-EVENT_HISTORY_LEN:]
@@ -89,7 +131,7 @@ def _event_history(env):
     return out
 
 
-def play_game(teacher, seed, seat, args):
+def play_game(teacher, seed, seat, args, actor=None):
     env = RummikubPPOEnv(
         max_candidates=args.max_candidates,
         max_turns=args.max_turns,
@@ -107,6 +149,10 @@ def play_game(teacher, seed, seat, args):
     while not done:
         n_cands = len(env.last_candidates)
         if n_cands > 0:
+            # The teacher always provides the label (and its evaluations);
+            # with a separate actor (DAgger) the game then follows the
+            # actor's move instead. Labelling first is safe: the teacher
+            # only reads env and its own RNG.
             action = teacher(env, obs)
             # R10: teacher's per-candidate evaluations (rollout avg scores /
             # endgame win-forcing vote fractions), NaN where not evaluated.
@@ -131,9 +177,15 @@ def play_game(teacher, seed, seat, args):
                 "events": _event_history(env),
                 "turn": np.int16(turn),
             })
+            if actor is not None:
+                played = actor(env, obs)
+                records[-1]["actor_action"] = np.int16(played)
+            else:
+                played = action
+                records[-1]["actor_action"] = np.int16(played)
         else:
-            action = env.max_candidates
-        obs, _, terminated, truncated, info = env.step(action)
+            played = env.max_candidates
+        obs, _, terminated, truncated, info = env.step(played)
         done = terminated or truncated
         turn += 1
 
@@ -148,17 +200,21 @@ def play_game(teacher, seed, seat, args):
 
 
 _WORKER_TEACHER = None
+_WORKER_ACTOR = None
 
 
 def _pair_worker(payload):
-    global _WORKER_TEACHER
+    global _WORKER_TEACHER, _WORKER_ACTOR
     args, seed = payload
     if _WORKER_TEACHER is None:
         _WORKER_TEACHER = make_teacher(args)
+        if args.actor == "student":
+            _WORKER_ACTOR = make_student_actor(args)
 
     records = []
     for seat in (0, 1):
-        records.extend(play_game(_WORKER_TEACHER, seed, seat, args))
+        records.extend(
+            play_game(_WORKER_TEACHER, seed, seat, args, actor=_WORKER_ACTOR))
     if not records:
         return 0
 
@@ -191,6 +247,14 @@ def main():
     parser.add_argument("--consistent", action="store_true")
     parser.add_argument("--endgame-search", action="store_true")
     parser.add_argument("--search-nodes", type=int, default=200)
+    parser.add_argument("--actor", choices=["teacher", "student"],
+                        default="teacher",
+                        help="who PLAYS the game; the teacher always labels. "
+                             "'student' = DAgger collection on the student's "
+                             "own state distribution")
+    parser.add_argument("--actor-model", default="distill_s1s_t03_v05.pt")
+    parser.add_argument("--actor-history", action="store_true")
+    parser.add_argument("--actor-margin", type=float, default=0.0)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--recycle-after", type=int, default=25,
                         help="restart each worker process after this many "
