@@ -1,4 +1,0 @@
-pairs: 1000 requested, 109 to generate (891 already on disk)
-  50/109 pairs, 1837 decisions, ETA 31min
-  100/109 pairs, 3567 decisions, ETA 5min
-done: 3836 decisions in 3257s -> data/stage1

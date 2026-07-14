@@ -1,9 +1,0 @@
-=== mix_dw0 ===
-win_rate        : 52.5%
-pair patterns   : {'LL': 3, 'LW': 22, 'WL': 10, 'WW': 5}
-mean pair net   : +0.03 ± 0.36 (SE)  [>0 means better than greedy]
-=== mix_dw4 ===
-win_rate        : 31.2%
-pair patterns   : {'LL': 13, 'LT': 1, 'LW': 15, 'TL': 2, 'TW': 2, 'WL': 6, 'WW': 1}
-mean pair net   : -6.90 ± 1.67 (SE)  [>0 means better than greedy]
-MIX-SMOKE-DONE

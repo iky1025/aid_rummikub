@@ -177,7 +177,7 @@ def play_game(policy, seed, ppo_player, args):
         max_turns=args.max_turns,
         seed=seed,
         ppo_player=ppo_player,
-        opponent="ilp",
+        opponent=args.opponent,
         initial_meld_value=args.initial_meld_value,
         exhaustive_candidates=args.exhaustive,
     )
@@ -219,6 +219,8 @@ def main():
                         choices=["greedy", "rollout", "model", "random", "student"],
                         required=True)
     parser.add_argument("--model", default="rummikub_ppo_best_r7.pt")
+    parser.add_argument("--opponent", choices=["ilp", "random"], default="ilp",
+                        help="baseline opponent: greedy-ILP (default) or random")
     parser.add_argument("--pairs", type=int, default=30)
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--max-candidates", type=int, default=20)
@@ -299,7 +301,8 @@ def main():
         if len(pair_nets) > 1 else 0.0
     elapsed = time.time() - t0
 
-    print(f"\n=== mirror eval: {args.policy} vs greedy-ILP ===")
+    opp_name = {"ilp": "greedy-ILP", "random": "random"}[args.opponent]
+    print(f"\n=== mirror eval: {args.policy} vs {opp_name} ===")
     print(f"pairs           : {args.pairs} ({n_games} games)")
     print(f"win/loss/timeout: {outcomes['win']}/{outcomes['loss']}/{outcomes['timeout']}")
     print(f"win_rate        : {win_rate:.1%}")

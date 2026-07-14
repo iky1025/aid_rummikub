@@ -1,11 +1,19 @@
-# Local VS Code multi-root workspace file
+# Editor / workspace
 rummikub_ILP+PPO.code-workspace
-readme.md
+.vscode/
 
-
+# Python
 __pycache__/
 *.py[cod]
+
+# Trained models & generated datasets (regenerate via the pipeline)
 *.pt
-.vscode/
+data/
+
+# Logs & scratch
+*.log
 train_log.csv
-*.pt
+scratchpad/
+
+# Internal working notes (kept local, not published)
+CLAUDE.md

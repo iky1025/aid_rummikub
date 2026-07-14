@@ -1,1018 +1,148 @@
-# AID Rummikub — PPO + ILP
 
-루미큐브(조커 제외 단순화 버전)에서 그리디 ILP 베이스라인을 이기는 에이전트를 만드는 프로젝트.
+# AID Rummikub
 
-- 에이전트: PPO (R1~R7) → determinized rollout + 엔드게임 탐색 (R8~, 현재)
-- 상대 봇: greedy ILP/DP (매 턴 손패 사용량 최대화)
-- 후보 생성: 솔버가 에이전트에게 매 턴 가능한 수 N개를 후보로 제공
-- 액션: 에이전트가 후보 중 하나를 고르거나 "드로우" 선택
+**English** · [한국어](README.ko.md)
+
+**Beating an optimal one-turn baseline in two-player Rummikub with a distilled, forward-only policy network.**
+
+A learned agent that plays hidden-information two-player Rummikub (no jokers; 4 colors × 13 numbers × 2 decks = 104 tiles) and **significantly beats the greedy ILP baseline** — using no search at inference. The winning policy is a ~94K-parameter network distilled from a search-based teacher via **DAgger**.
+
+> **Headline result:** a forward-only network wins **67.8%** vs. the greedy baseline over 1,000 mirror-paired games (≈17σ over 50%), generalizes to a random opponent (69.6%), and — by ablation — the edge comes from the **network's move selection**, not the solver's candidate generation.
 
 ---
 
-## 0. 프로젝트 현황 (2026-07, R8~R9)
+## TL;DR
 
-> 아래 1~11장은 PPO 시대(R1~R7)의 문서로, 게임 룰·코드 구조 참조용으로는 유효하나
-> 실험 방법론은 R8부터 크게 바뀌었다. 라운드별 상세 기록은 `CLAUDE.md` 참조.
+- **The problem.** Search (Monte-Carlo rollouts + endgame lookahead) plays this game well but is far too slow for real-time use. Naively imitating a search teacher (off-policy behavior cloning) **collapses** under covariate shift.
+- **The fix.** **DAgger** — the student plays, visiting its own state distribution, and the teacher relabels the correct move at each state it actually reaches. This breaks the compounding-error loop that sinks off-policy distillation.
+- **The outcome.** A tiny forward-only network reaches — and empirically exceeds — teacher-level play, satisfying the project's goal of a *pure-network* agent.
 
-### 스토리 요약
+| Agent                                       |        Win rate | pair net | Notes                                         |
+| ------------------------------------------- | --------------: | -------: | --------------------------------------------- |
+| greedy vs greedy (sanity)                   |            ~48% |       — | harness neutral baseline                      |
+| greedy-copier ceiling                       |           52.5% |       — | best a greedy-imitating student reaches       |
+| search-based teacher                        |           56.9% |    +0.46 | information-consistent rollout + endgame DFS  |
+| **off-policy distillation (control)** | **28.7%** |   −9.12 | same recipe, no DAgger → collapse            |
+| **DAgger student (160 pairs)**        | **70.3%** |    +0.99 | ~7σ over the copier ceiling                  |
+| **DAgger student (1,000 pairs)**      | **67.8%** |    +0.29 | large-N confirmation, ~17σ over 50%          |
+| full oracle (cheats: hand + deck)           |            ~89% |       — | theoretical reference; dominated by deck luck |
 
-1. **R1~R7 (PPO)**: 그리디 상대 승률 40~60% 진동, 발전 없음. 진단 — dense 보상이
-   사실상 그리디 모방을 가르쳤고, 턴의 절반이 강제 드로우라 결정 기회 자체가 희박.
-2. **R8 (방향 전환)**: 학습 전에 "이길 여지(신호)가 존재하는가"부터 분해.
-   - 인프라: 솔버 CBC→HiGHS→자체 DP(`rummikub_dp.py`, 26×), 미러 페어 평가
-     (`eval_mirror.py`)로 덱 운 상쇄. 실험 한 세트가 수 분이면 돎.
-   - 오라클 실험: 완전정보(상대 손패+덱)면 승률 ~89% — 단 대부분이 **자기 미래
-     드로우 예지**(예측 불가). 상대 **손패만** 알면 +6%p — 이게 회수 가능한 예산.
-   - 부수 성과: 기존 ILP의 중복 세트 버그, HiGHS 1.13 presolve 버그 발견·수정
-     (`R8/highs_issue/`).
-3. **R9 (현재)**: 정보 일관 determinization + 엔드게임 승리강제 탐색으로
-   **치팅 없이 그리디를 유의하게 이기는 첫 에이전트 확보**.
+All comparisons use **mirror-paired** evaluation (same deck, seats swapped) to cancel deal luck; standard rule (initial meld ≥ 30); train/eval seeds disjoint.
 
-### 핵심 결과 (160페어 = 320게임, 미러 페어, meld=30, 시드 2000~2159)
+---
 
-| 에이전트 | 승률 | pair net | 유의성 |
-|---|---|---|---|
-| greedy sanity (기준선) | 46.2%* | -0.45 | — |
-| fair rollout (손패 정보 없음) | 45.0%* | -0.53 | 무가치 확정 |
-| **fair combo** (consistent+margin+엔드게임탐색) | **56.9%** | +0.46±0.31 | 부호검정 2.5σ (WW49/LL27) |
-| semi-oracle + 엔드게임탐색 (손패 치팅, 상한 참조용) | 60.0% | +0.80±0.27 | ~3σ (WW51/LL19) |
-| full oracle (손패+덱 치팅, 이론 상한) | ~89% | +5~6 | 덱 예지 지배, 회수 불가 |
+## Why it works
 
-\* sanity/fair는 40페어 측정.
+The winning edge is *isolated* by an ablation that holds the solver's candidate set fixed and varies only the **selection function**:
 
-### 재현
+| Selection over identical candidates |        Win rate |
+| ----------------------------------- | --------------: |
+| uniform random                      |           40.6% |
+| greedy max-tiles heuristic          |           46.2% |
+| **learned network**           | **70.3%** |
+
+Random selection is *worse* than greedy, so the candidate set alone confers no advantage — the +24–30 point gap is entirely the network's learned choice. Instrumentation confirms the network is genuinely active (it overrides the greedy max-play on **34%** of decisions, including **19.5%** where it strategically *holds* tiles the greedy heuristic would always play), and its deviations are **teacher-aligned** (when the teacher departs from greedy, the student departs too 77% of the time; exact-move agreement 49%).
+
+---
+
+## How it works (pipeline)
+
+```
+                     ┌── information-consistent PIMC rollout (det=8)
+1. Teacher  ─────────┤
+   (slow, strong)    └── endgame win-forcing DFS  (+ greedy-margin guard)
+
+2. DAgger data   student plays → visits its own states → teacher relabels the
+                 correct move (+ per-candidate rollout scores) at each state
+
+3. Distillation  soft cross-entropy (teacher rollout margins) + value regression
+                 → forward-only DistillStudent network (no search at inference)
+```
+
+The teacher does not use an oracle: it estimates each candidate's value by simulating plausible (information-consistent) continuations, and proves forced wins by search in the endgame. The student distills those *decisions* into a fast reactive policy and, by averaging out the noisy 1-ply teacher's per-move variance, exceeds it — an expert-iteration (ExIt) effect.
+
+### The network (`DistillStudent` — 116,919 params; ≈93.5K used at inference)
+
+![DistillStudent architecture](docs/architecture.svg)
+
+A permutation-invariant scoring network: a shared candidate encoder scores each legal move from *(state, that candidate)* alone, so the output never depends on candidate order — the network must read each move's features rather than memorize a slot.
+
+| Module            | Shape                       | Params | At inference |
+| ----------------- | --------------------------- | -----: | ------------ |
+| `state_encoder` | 108→128→128               | 30,464 | ✅           |
+| `cand_encoder`  | 104→128→128 (shared ×20) | 29,952 | ✅           |
+| `score_head`    | 256→128→1                 | 33,025 | ✅           |
+| `draw_head`     | 128→1 (bias −1.97)        |    129 | ✅           |
+| `opp_hand_head` | 128→128→52                | 23,220 | train-only   |
+| `critic`        | 128→1                      |    129 | train-only   |
+
+---
+
+## Repository layout
+
+| File                              | Role                                                                                   |
+| --------------------------------- | -------------------------------------------------------------------------------------- |
+| `rummikub_solver.py`            | one-turn optimization ILP (`solve`), candidate diversification (`solve_many`)      |
+| `rummikub_dp.py`                | van Rijn & Takes-style DP solver for the hot path (≈26× over ILP)                    |
+| `rummikub_env.py`               | game state (deck / hands / table) + solver wrapper                                     |
+| `ppo_env.py`                    | Gymnasium environment: observation, reward, opponent (greedy / random)                 |
+| `ppo_model.py`                  | `ActorCritic` + `DistillStudent` (state encoder + candidate encoder + score head)  |
+| `rollout_agent.py`              | determinized-rollout teacher + endgame win-forcing DFS                                 |
+| `selfplay_data.py`              | self-play / DAgger data generation (`--actor student` relabels student trajectories) |
+| `distill.py`                    | supervised distillation (soft CE + value regression + optional aux head)               |
+| `eval_mirror.py`                | low-variance mirror-pair evaluation (`--policy student/greedy/rollout/random`)       |
+| `autopsy_oracle.py`             | loss-game autopsy — DFS over own move branches to prove winnability                   |
+| `train_ppo.py`, `eval_ppo.py` | PPO training / evaluation (R1–R7 era)                                                 |
+
+The R10 strategy is in `ROADMAP.md`; the paper plan in `docs/paper_chapter_plan.md`; the full game rules and observation/action encoding in `docs/game_rules.md`; a standalone reproduction of the HiGHS presolve bug in `docs/highs_presolve_bug/`.
+
+---
+
+## Quickstart
 
 ```bash
-# 기준선 (greedy vs greedy)
-python eval_mirror.py --policy greedy --pairs 40 --seed 2000 --initial-meld-value 30 --workers 8
-
-# fair combo (배치 가능 에이전트, 치팅 없음)
-python eval_mirror.py --policy rollout --consistent --greedy-margin 1.0 --endgame-search \
-    --pairs 40 --seed 2000 --initial-meld-value 30 --determinizations 8 \
-    --rollout-turns 24 --candidate-cap 4 --workers 8
-
-# semi-oracle 상한 (상대 손패 공개)
-python eval_mirror.py --policy rollout --oracle hand --endgame-search \
-    --pairs 40 --seed 2000 --initial-meld-value 30 --determinizations 8 \
-    --rollout-turns 60 --candidate-cap 6 --workers 8
-```
-
-### R8~ 신규 파일
-
-| 파일 | 역할 |
-|---|---|
-| `rummikub_dp.py` | van Rijn & Takes 스타일 DP 솔버 (핫패스, ILP 대비 26×) |
-| `rollout_agent.py` | determinized rollout 정책 + 엔드게임 승리강제 DFS |
-| `eval_mirror.py` | 미러 페어(같은 덱, 자리 교대) 저분산 평가 |
-| `autopsy_oracle.py` | 패배 게임 부검 — 내 수 분기 DFS로 "이길 수 있었나" 증명 |
-| `R8/` | 실험 로그 전체 (CLAUDE.md 수치의 증거 자료) |
-
-### 다음 단계 (R9 계속)
-
-- 상대 손패 분포 예측 학습 → determinization을 예측 분포에서 샘플링 (semi와의
-  3.1%p 갭 회수)
-- expert iteration: 탐색 에이전트를 네트워크에 증류 → 플레이아웃 정책 교체 루프
-
----
-
-## 1. 게임 정의
-
-### 1.1 타일 구성
-
-- 색상 4종: R, B, Y, K
-- 숫자 13종: 1 ~ 13
-- 같은 (색, 숫자) 타일이 2장씩
-- 조커 없음 (단순화 위해 제거)
-- 총 타일 수: 4 × 13 × 2 = **104장**
-
-### 1.2 유효 세트
-
-- **Run**: 같은 색, 연속 숫자, 길이 ≥ 3 (예: R3 R4 R5)
-- **Group**: 같은 숫자, 서로 다른 색, 크기 3 또는 4 (예: R7 B7 Y7)
-
-### 1.3 게임 진행
-
-1. 게임 시작 시 두 플레이어에게 각각 14장 분배 (덱에서)
-2. PPO 차례
-   - 손패와 테이블을 보고 ILP가 가능한 수 후보를 생성
-   - PPO가 후보 중 하나 선택하거나 "드로우"
-   - 후보 선택 시: 손패에서 타일을 빼서 테이블 세트 구성 (테이블 전체 재배열 허용)
-   - 드로우 선택 시: 덱에서 1장 가져옴
-3. ILP(상대) 차례
-   - greedy ILP가 자기 손패 사용량 최대화하는 수 1개 선택해서 실행
-   - 낼 수 없으면 드로우
-4. 다시 PPO 차례 → 반복
-
-### 1.4 종료 조건
-
-- 누군가의 손패가 0장이면 즉시 종료 (승/패 결정)
-- 또는 100턴 도달 시 타임아웃
-
-### 1.5 초기 등록 룰 (R7, 옵션)
-
-`initial_meld_value > 0`이면 활성화 (기본 30). 실제 루미큐브 규칙에 가깝게.
-
-- 각 플레이어는 첫 등록(meld) 전까지 **테이블 재배열 불가**
-- 첫 등록은 손패만으로 새 set(들)을 만들어 등록
-- 첫 등록의 타일 합계 (number 값 합) ≥ 30점 필요
-- 등록 완료 후엔 자유롭게 테이블 재배열 가능
-
-효과: 초반엔 양쪽 드로우 단계, 손패 모으기 전략 필요. 게임이 더 strategic.
-
-### 1.6 선공 교대 (R7, 옵션)
-
-`alternate_first_player=True`이면 게임마다 PPO의 위치(P0/P1)가 교대.
-
-- 학습 시: PPO가 두 위치 모두 학습 → robustness ↑
-- 평가 시: 같은 정책의 P0/P1 평균 성능 측정 가능
-
----
-
-## 2. 코드 구조
-
-```
-aid_rummikub/
-├── rummikub_solver.py    # 타일/세트 정의 + ILP 솔버
-├── rummikub_env.py       # 단일 플레이어 환경 (덱/손패/테이블)
-├── ppo_env.py            # gymnasium 호환 PPO vs ILP 환경
-├── ppo_model.py          # Actor-Critic 신경망
-├── train_ppo.py          # PPO + VecEnv 학습 스크립트
-├── eval_ppo.py           # 학습된 모델 평가 스크립트
-├── main.py               # 사람이 직접 돌리는 인터랙티브 데모
-├── test_ppo_env.py       # 환경 단위 테스트
-├── test_ppo_model.py     # 모델 단위 테스트
-└── README.md
-```
-
-### 2.1 의존성 계층
-
-```
-train_ppo.py / eval_ppo.py
-        ↓
-   ppo_env.py (gym.Env)
-        ↓
-   rummikub_env.py
-        ↓
-   rummikub_solver.py
-```
-
-`ppo_model.py`는 `train_ppo.py`와 `eval_ppo.py`에서만 사용.
-
----
-
-## 3. ILP 솔버 (`rummikub_solver.py`)
-
-루미큐브의 핵심 의사결정을 정수 선형 계획 (ILP)으로 모델링.
-
-### 3.1 결정 변수
-
-`x_i ∈ {0, 1}` — i번째 후보 세트를 사용할지 여부.
-
-후보 세트는 `generate_all_valid_sets()`로 모듈 로드 시 1회 생성 (Run + Group 약 285개). 매 호출에서는 `filter_available_sets()`로 현재 손패+테이블 타일로 만들 수 있는 후보만 추림.
-
-### 3.2 제약
-
-1. 각 일반 타일 사용량 ≤ 보유량
-2. **기존 테이블 타일은 반드시 재사용** (테이블에서 타일이 사라지면 안 됨)
-3. (옵션) 손패 최소 1장은 써야 함 — PPO 후보 생성 시 사용
-
-### 3.3 목적함수
-
-`maximize (총 사용 타일 수 - 기존 테이블 타일 수) = 새로 낸 손패 타일 수`
-
-→ **매 턴 손패를 최대한 많이 내는 그리디 ILP**.
-
-### 3.4 다중 해 생성 (`solve_many`) — R6에서 다양화
-
-**문제 (R5까지)**: 목적함수가 `max used_hand_tile_count`로 고정. exclusion으로 반복 풀면 결과가 **거의 다 max-play 변형** (같은 7장을 다른 방식으로 내는 후보들). 전략적 다양성 부족.
-
-**해결 (R6, D')**: 2-Phase 다양화
-
-```
-Phase 1: tile-count 다양화
-  - max_k 발견 (예: 7장 가능)
-  - 각 k ∈ [max_k, max_k-1, ..., 1]에 대해 best 솔루션 찾기
-  - exact_hand_tiles_used=k 제약 사용
-  - 결과: 7장, 6장, 5장, ..., 1장 내기 후보 각 1개씩 (가능한 경우만)
-
-Phase 2: tile-selection 다양화
-  - 남는 슬롯을 max-play 변형으로 채움 (R5 방식)
-  - exclusion constraint로 다른 조합 찾기
-```
-
-**예시 — seed=10 t=0**
-
-| Phase | tile_count | 후보 수 |
-|---|---|---|
-| Phase 1 | 7 (max) | 1 |
-| Phase 1 | 6 | 1 |
-| Phase 1 | 5 | 0 (infeasible) |
-| Phase 1 | 4 | 1 |
-| Phase 1 | 3 | 1 |
-| Phase 1 | 2 | 0 |
-| Phase 1 | 1 | 0 |
-| Phase 2 | 추가 6장 | 1 |
-| Phase 2 | 추가 3장 | 2 |
-| **합계** | **7개** | dist={7:1, 6:2, 4:1, 3:3} |
-
-이전 R5라면 7개 후보가 모두 "7장 내기 변형 A/B/C/..." — 전략적으로 거의 같음. R6는 명시적으로 **"덜 내고 보존"** 옵션을 강제 생성.
-
-### 3.5 솔버 파라미터 (R6 업데이트)
-
-`solve()` 새 파라미터
-
-- `max_hand_tiles_used`: `used_hand_tile_expr <= k` 제약 추가
-- `exact_hand_tiles_used`: `used_hand_tile_expr == k` 제약 추가
-
-이 둘로 "정확히 k장 내기" 또는 "최대 k장까지 내기" 제어 가능. `solve_many` Phase 1에서 활용.
-
-### 3.6 솔버 선택
-
-- PuLP의 `COIN_CMD(threads=1)` 사용
-- conda-forge의 pulp에는 PULP_CBC_CMD가 번들되지 않아 conda-installed `cbc` 바이너리를 PATH에서 자동 인식
-- threads=1로 CBC 자체 멀티스레딩 비활성 (VecEnv와 코어 경쟁 방지)
-
----
-
-## 4. RL 환경 (`ppo_env.py`)
-
-gymnasium.Env 호환. SubprocVecEnv에 들어가서 멀티프로세스로 실행됨.
-
-### 4.1 Observation (Dict)
-
-```python
-observation_space = spaces.Dict({
-    "state":      Box(0, 10, shape=(106,)),       # 내 손패/테이블/덱/상대패
-    "cand_feats": Box(0, 10, shape=(20, 104)),    # 후보별 next-state (R6: 10→20)
-    "mask":       Box(0, 1, shape=(21,)),         # 유효 action 마스크 (R6: 11→21)
-})
-```
-
-**`state`** (108차원) — R7 적용
-
-| 슬라이스 | 차원 | 의미 |
-|---|---|---|
-| `[0:52]` | 52 | 내 손패의 타일 카운트 벡터 (값 / 2.0) |
-| `[52:104]` | 52 | 테이블 전체 타일 카운트 벡터 |
-| `[104:105]` | 1 | 덱 잔여 비율 (deck_count / 104) |
-| `[105:106]` | 1 | 상대 손패 수 정규화 (ilp_hand / 14) |
-| `[106:107]` | 1 | 내 초기 등록 완료 플래그 (0/1) ← R7 |
-| `[107:108]` | 1 | 상대 초기 등록 완료 플래그 (0/1) ← R7 |
-
-**`cand_feats`** (20 × 104) — 각 후보를 적용한 다음 상태 (R6: max_candidates 10→20)
-
-| 슬라이스 | 차원 | 의미 |
-|---|---|---|
-| `[i, 0:52]` | 52 | 후보 i 적용 후의 내 손패 |
-| `[i, 52:104]` | 52 | 후보 i 적용 후의 테이블 |
-
-후보가 20개 미만이면 0으로 패딩 (mask로 무효 표시).
-
-**`mask`** (21차원) — 유효한 액션은 1, 무효는 0
-
-- `mask[0:20]`: 후보 슬롯
-- `mask[20]`: "드로우" 액션 (항상 1)
-
-### 4.2 Action Space
-
-`Discrete(21)`. 인덱스 0~19는 후보, 20은 드로우. (R6: 11→21)
-
-### 4.3 환경 인터페이스 (gymnasium 표준)
-
-```python
-obs, info = env.reset(seed=...)
-obs, reward, terminated, truncated, info = env.step(action)
-```
-
-- `terminated`: 누군가 손패 비움 (승/패)
-- `truncated`: 100턴 도달 (타임아웃)
-- `info["outcome"]`: `"win" / "loss" / "timeout"`
-
-### 4.4 보상 구조 (다음 라운드 계획 반영)
-
-| 이벤트 | 보상 | 비고 |
-|---|---|---|
-| PPO가 타일 n장 냄 | `+0.1n` | 매 후보 선택 시 |
-| 매 턴 시간 페널티 | `-0.01` | 무한 드로우 방지 |
-| 드로우 (덱 있음) | `-0.5` | 손패 늘어남 페널티 |
-| 드로우 (덱 없음) | `-1.0` | 정말 할 게 없을 때 |
-| 상대가 타일 n장 냄 | `-0.02n` | 상대 진행을 약간 페널티 |
-| **승리** | `+5.0 + 0.3 × ilp_hand_remaining` | 상대 잔여 많으면 압승 보너스 |
-| **패배** | `-5.0 - 0.3 × ppo_hand_remaining` | 내 잔여 적으면 박빙 |
-| **타임아웃** | `+0.3 × (ilp_hand - ppo_hand)` | 진행 중이던 상황 반영 |
-
-**제거된 신호** (R5에서 제거)
-
-- ~~매 턴 손패 크기 페널티 `-0.02 × hand_size`~~
-  - 이유: 매 턴 일정한 압박이 "역전 시도(큰 콤보 기다리기)"를 불가능하게 만듦
-  - 종료 시점 margin 보상으로 옮김
-
-### 4.5 보상 설계 의도
-
-세 가지 행동 양상을 정책이 **상태에 따라 동적으로** 학습하게 함
-
-| 상태 | 권장 행동 | 보상 신호 |
-|---|---|---|
-| PPO 패 적음, 상대 패 적음 (비등 종반) | 안전한 마무리, 빠르게 비움 | 승리 +5 ~ +9 |
-| PPO 패 많음, 상대 패 적음 (압패 직전) | 역전 노림, 큰 콤보 기다림 | 박빙 패배 -5 vs 압패 -9 차이로 보상 |
-| PPO 패 적음, 상대 패 많음 (압승 직전) | 어떻게든 빨리 끝 | 승리 +5 + 큰 보너스 |
-
-→ obs에 상대 손패 정보가 있어야 이 동적 정책이 표현 가능. 그래서 4.1의 NEW 차원.
-
----
-
-## 5. 신경망 모델 (`ppo_model.py`)
-
-### 5.1 구조
-
-```
-state (106) ─→ state_encoder (MLP 128) ─→ state_emb (128)
-                                              │
-                                              ├──→ critic (Linear) ─→ V(s)
-                                              │
-                                              ├──→ draw_head (Linear, bias=-2.0)
-                                              │       └─→ draw_logit
-                                              │
-                                              └──→ concat with each cand_emb
-                                                          │
-cand_feats (10, 104) ─→ cand_encoder (MLP 128) ─→ cand_emb (10, 128)
-                                                          │
-                                                  score_head (MLP) ─→ cand_logits (10)
-
-최종 logits = concat([cand_logits, draw_logit]) → (11,)
-```
-
-### 5.2 Action 점수화
-
-- 각 후보 i에 대해 `score_i = MLP([state_emb, cand_emb_i])` — (state, action) 쌍을 직접 점수화
-- 드로우는 state만 보는 별도 헤드 `draw_logit = draw_head(state_emb)`
-- **인덱스 의존 없음** — 어떤 후보가 슬롯 0에 들어가든 점수는 그 내용에 의해 결정 (permutation-invariant)
-
-### 5.3 Draw head bias 초기화
-
-```python
-nn.init.constant_(self.draw_head.bias, -2.0)
-```
-
-학습 초기 draw 확률을 ~12%로 강제 시작. "기본값 드로우" 함정 방지.
-
-### 5.4 Mask 적용
-
-```python
-masked_logits = logits.clone()
-masked_logits[mask == 0] = -1e9
-dist = Categorical(logits=masked_logits)
-```
-
-무효 액션은 사실상 확률 0. PPO의 surrogate loss는 mask된 분포에서 계산.
-
----
-
-## 6. 학습 파이프라인 (`train_ppo.py`)
-
-### 6.1 Vectorized Environment
-
-stable-baselines3의 `SubprocVecEnv` 차용
-
-```python
-env_fns = [make_env_fn(seed + i) for i in range(n_envs)]
-vec_env = SubprocVecEnv(env_fns, start_method="forkserver")
-```
-
-- 8~10개 worker process가 각자 RummikubPPOEnv 실행
-- CBC subprocess 호출이 여러 코어에서 동시 진행 → 학습 속도 2-2.5x
-- update당 episode 수 증가 (12 → 30+) → gradient 노이즈 √2배 감소
-
-### 6.2 PPO 알고리즘
-
-표준 PPO with clipping. 직접 구현 (sb3의 PPO는 사용 안 함, VecEnv만 차용).
-
-학습 한 update의 흐름
-
-```
-1. n_steps 동안 vec_env에서 rollout 수집
-   - 매 step: model.forward_actor(state, cand_feats) → logits
-   - mask 적용 후 Categorical 샘플 → action
-   - vec_env.step(action) → next_obs, reward, done, info
-   - buffer에 (state, cand_feats, mask, action, reward, done, log_prob, value) 저장
-
-2. 마지막 상태에서 V(s) bootstrap
-
-3. Per-env GAE 계산 (env마다 별도 trajectory)
-
-4. flatten (n_steps, n_envs, ...) → (n_steps * n_envs, ...)
-
-5. ppo_epochs 반복:
-   - 미니배치별로 forward → loss → backward → step
-   - actor_loss: clipped surrogate (clip_range=0.1)
-   - critic_loss: MSE
-   - entropy_loss: 음의 entropy (탐색 보너스)
-   - total = actor + 0.1 * critic - 0.01 * entropy
-
-6. LR scheduler.step() — LinearLR로 점진 감소
-
-7. CSV/콘솔 로깅
-8. best 갱신 시 best.pt 저장, save_every마다 model.pt 저장
-```
-
-### 6.3 Hyperparameter (기본값)
-
-| 파라미터 | 값 | 비고 |
-|---|---|---|
-| `n_envs` | 10 | M-series 10코어 활용 |
-| `n_steps` | 128 | env당 rollout 길이 |
-| update당 총 경험 | 1280 steps | n_envs × n_steps |
-| `total_updates` | 100 | |
-| `batch_size` | 128 | PPO 미니배치 |
-| `ppo_epochs` | 4 | 한 rollout 데이터로 4 epoch |
-| `gamma` | 0.99 | 할인 |
-| `gae_lambda` | 0.95 | GAE |
-| `clip_range` | 0.1 | PPO clip |
-| `value_coef` | 0.1 | critic loss 가중치 |
-| `entropy_coef` | 0.01 | entropy 보너스 가중치 |
-| `lr_init` | 3e-4 | Adam 초기 lr |
-| `lr_final` | 3e-5 | LinearLR 종료 시 lr |
-| `hidden_dim` | 128 | MLP 은닉층 (모델 내부) |
-
-### 6.4 출력 파일
-
-- `rummikub_ppo_model.pt` — 매 N updates마다 + 마지막에 저장
-- `rummikub_ppo_best.pt` — `avg_episode_reward`가 최대일 때 저장
-- `train_log.csv` — update별 통계
-
-`--tag <suffix>`로 파일명 끝에 접미사 붙여 충돌 방지 가능.
-
-### 6.5 로깅 컬럼 (R5 업데이트)
-
-```text
-update, elapsed_sec, steps_total, episodes,
-win_rate, loss_rate, timeout_rate,
-avg_episode_reward, avg_episode_length,
-draw_action_ratio, forced_draw_ratio, chosen_draw_ratio,   # R5
-avg_candidate_count,
-avg_win_margin, avg_loss_margin, expected_score,           # R5
-actor_loss, critic_loss, entropy,
-lr, best_avg_reward
-```
-
-콘솔 출력 한 줄 예시 (R5)
-
-```text
-upd= 10/100 t= 980s steps=12800 eps=31 W/L/T=14/17/0 rew= -4.20 len=41.2
-              draw=0.52(f=0.50 c=0.02) wm= 3.8 lm= 1.2 es=+1.65
-              a=-0.001 cl=5.8 ent=0.71 lr=2.5e-04 best= -4.20
-```
-
-핵심 신규 지표
-
-- `draw=0.52(f=0.50 c=0.02)`: 전체 드로우 / 강제 드로우 / 선택 드로우
-  - **forced**: 유효 후보 0개 → 어쩔 수 없는 드로우
-  - **chosen**: 유효 후보 있지만 정책이 선택한 드로우
-- `wm` (win_margin): 이긴 게임에서 상대 잔여 손패 평균
-- `lm` (loss_margin): 진 게임에서 내 잔여 손패 평균
-- `es` (expected_score): 게임당 평균 net margin = "이긴 만큼 - 진 만큼"
-
----
-
-## 7. 평가 (`eval_ppo.py`)
-
-### 7.1 PPO 정책 모드
-
-- **Deterministic (argmax)** (기본): 매 상태에서 logit 최대 액션. 실제 배포 기준
-- **Stochastic (sample)**: 분포에서 샘플. 학습 분포 그대로 검증
-- **PPO Random** (`--ppo-random`): PPO가 랜덤. Sanity check ("학습한 게 있긴 한가?")
-
-### 7.1.2 상대 (Opponent) 선택
-
-- **`--opponent ilp`** (기본): 그리디 ILP. 매 턴 최적해 적용. 강한 상대
-- **`--opponent random`**: 균등 랜덤. 후보 + 드로우 중 무작위. 약한 상대 (baseline)
-
-### 7.1.3 비교 모드
-
-- **`--compare-opponents`**: PPO를 ILP/Random 두 상대 모두에 대해 평가 후 표로 비교
-
-```bash
-# 기본: PPO(det) vs ILP
-python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100
-
-# PPO(stoch) vs ILP
-python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100 --stochastic
-
-# PPO(det) vs Random 상대
-python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100 --opponent random
-
-# 두 상대 비교 ★
-python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100 --compare-opponents
-
-# Sanity check: PPO 자체도 랜덤
-python eval_ppo.py --ppo-random --episodes 100
-```
-
-### 7.2 지표 (R5 업데이트)
-
-- `win_rate`, `loss_rate`, `timeout_rate`
-- `avg_reward` (보상 평균)
-- `avg_steps` (게임당 턴 수)
-- `draw_ratio` (드로우 액션 비율) — `forced` / `chosen` 분리 표시
-- **`avg_win_margin`** — 이긴 게임에서 상대의 잔여 손패 평균
-- **`avg_loss_margin`** — 진 게임에서 내 잔여 손패 평균
-- **`expected_score`** — (Σ win_margins - Σ loss_margins) / episodes
-
-해석 예시
-
-```text
-episodes        : 100
-wins            : 48 (48.0%)
-  avg margin    : 5.3 (opponent tiles left)
-losses          : 52 (52.0%)
-  avg margin    : 1.8 (own tiles left)
-expected_score  : +1.61
-draw_ratio      : 0.53
-  forced        : 0.50
-  chosen        : 0.03
-```
-
-→ 승률 48%여도 expected_score = +1.61로 양수면 "잘 이기고 잘 진다" — 강한 정책.
-→ forced=0.50, chosen=0.03이면 드로우의 대부분은 게임 구조상 불가피함.
-
-### 7.2.2 상대 비교 모드 출력 예시
-
-```text
-metric                 |     det/vs_ilp |  det/vs_random
-─────────────────────────────────────────────────────────
-win_rate               |          50.0% |          85.0%
-loss_rate              |          50.0% |          15.0%
-expected_score         |         +0.500 |         +5.300
-avg_steps              |          42.00 |          50.00
-draw_ratio             |          0.520 |          0.510
-  chosen               |          0.030 |          0.020
-```
-
-**해석 기준**
-
-- `vs_ilp` 승률 (PPO의 진짜 실력 측정)
-- `vs_random` 승률 (학습이 의미 있는지 sanity)
-- 둘의 차이: ILP가 얼마나 강한지 (보통 35-40%p 차이가 정상)
-- 만약 `vs_random` 승률이 50% 근처면 → 학습 자체 실패 ⚠️
-
-### 7.3 표본 크기 권장
-
-- 20판: ±22% 신뢰구간 (참고용)
-- 50판: ±14%
-- 100판: ±10% (권장)
-- 200판: ±7% (논문급)
-
----
-
-## 8. 실행 방법
-
-### 8.1 환경 설정
-
-conda 환경 사용 (pip 혼합 X)
-
-```bash
-# 환경 생성
-conda create -n rummikub python=3.11 -y
-
-# 라이브러리 설치 (pytorch, numpy, pulp, sb3)
-conda install -n rummikub -c pytorch -c conda-forge \
-    pytorch numpy pulp stable-baselines3 -y
-
-# 활성화
+# environment (conda-forge; the pulp solver uses in-process HiGHS, presolve off)
+conda create -n rummikub python=3.11
 conda activate rummikub
+conda install -c conda-forge numpy pytorch pulp highspy gymnasium
 ```
 
-MPS 지원 확인
-
-```python
-import torch
-print(torch.backends.mps.is_available())  # True여야 함
-```
-
-### 8.2 학습
-
-기본 (10 envs, 100 updates)
+Reproduce the headline evaluations. Models (`*.pt`) and datasets (`data/`) are not tracked — regenerate them with the pipeline:
 
 ```bash
-python train_ppo.py
+# 1) generate DAgger data (student plays, teacher relabels)
+python selfplay_data.py --teacher rollout --consistent --greedy-margin 1.0 --endgame-search \
+    --determinizations 8 --rollout-turns 24 --candidate-cap 4 \
+    --actor student --actor-model <prior_student>.pt \
+    --pairs 500 --seed 220000 --initial-meld-value 30 --out data/dagger1 --workers 8
+
+# 2) distill the student
+python distill.py --data data/s1s_dagger1 --tag s1s_dagger1 \
+    --epochs 10 --soft-temp 0.3 --value-coef 0.5
+
+# 3) evaluate (mirror-paired) — the headline number
+python eval_mirror.py --policy student --model distill_s1s_dagger1.pt \
+    --pairs 160 --seed 2000 --initial-meld-value 30 --workers 8
+
+# ablation: identical candidates, different selection functions
+python eval_mirror.py --policy random --pairs 160 --seed 2000 --initial-meld-value 30 --workers 8
+python eval_mirror.py --policy greedy --pairs 160 --seed 2000 --initial-meld-value 30 --workers 8
 ```
-
-옵션
-
-```bash
-python train_ppo.py \
-    --n-envs 10 \
-    --n-steps 128 \
-    --total-updates 100 \
-    --batch-size 128 \
-    --ppo-epochs 4 \
-    --lr-init 3e-4 \
-    --lr-final 3e-5 \
-    --clip-range 0.1 \
-    --seed 42 \
-    --tag round1
-```
-
-R7 (선공 교대 + 30점 초기 등록):
-
-```bash
-python train_ppo.py \
-    --alternate-first-player \
-    --initial-meld-value 30 \
-    --tag r7
-```
-
-R7 평가 (반드시 학습과 동일한 옵션):
-
-```bash
-python eval_ppo.py \
-    --model rummikub_ppo_best_r7.pt \
-    --alternate-first-player \
-    --initial-meld-value 30 \
-    --compare-opponents \
-    --episodes 100
-```
-
-체크포인트에서 이어서 (보수적 lr 권장)
-
-```bash
-python train_ppo.py \
-    --resume rummikub_ppo_best.pt \
-    --lr-init 1e-4 \
-    --lr-final 1e-5 \
-    --tag round2
-```
-
-백그라운드 실행
-
-```bash
-nohup python train_ppo.py > run.log 2>&1 &
-tail -f run.log
-```
-
-### 8.3 평가
-
-```bash
-# Deterministic
-python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100
-
-# Stochastic (학습 분포 그대로)
-python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100 --stochastic
-
-# 매 에피소드 결과 출력
-python eval_ppo.py --model rummikub_ppo_best.pt --episodes 50 --verbose
-```
-
-### 8.4 인터랙티브 데모 (사람용)
-
-```bash
-python main.py
-```
-
-테이블 세트를 직접 입력 → ILP가 후보 10개 제시 → 사용자가 선택해서 적용.
 
 ---
 
-## 9. 설계 결정 / 알려진 한계
+## Limitations
 
-### 9.1 단순화 사항 (실제 루미큐브와 차이)
-
-- 조커 없음 (행동 공간 단순화, 학습 신호 명료화)
-- 30점 초기 등록 룰 없음 (모든 등록 자유)
-- 점수제 — 실제 게임 점수 대신 자체 보상 (대신 종료 시 margin으로 근사)
-- 4인 게임 아니라 1:1
-- 시간 제한 없음 (대신 100턴 타임아웃)
-
-### 9.2 ILP 후보 생성의 한계
-
-- PPO가 고를 수 있는 행동은 **ILP의 그리디 해**에서 파생된 N개로 제한
-- "후보에 없는 더 좋은 수"는 PPO가 학습으로 발견 불가
-- 다만 ILP의 약점(타일 다양성 무시, 멀티턴 무계획)을 정책 선택으로 부분 보완 가능
-
-### 9.3 학습 신호 약점
-
-- 12-30 episodes/update의 표본 노이즈
-- ILP 상대가 매 턴 최적해 → 비대칭 게임 → 승률 천장이 50% 근처
-- 보상이 매 턴 dense + 종료 sparse 혼합 → tuning 민감
-
-### 9.4 성능 최적화 적용된 것
-
-- ILP `solve_many`에서 deepcopy 제거 (next state는 ILPResult 필드로 직접 계산)
-- CBC threads=1 (멀티 envs와의 코어 경쟁 방지)
-- SubprocVecEnv로 ILP subprocess 호출 병렬화
-- MPS device 사용 (배치된 forward에서 효과)
-
-### 9.5 미해결 이슈
-
-- Mac 절전 모드 시 학습 시간 급증 가능 — 학습 중 절전 차단 권장 (caffeinate 등)
-- ILP가 큰 후보군에서 풀 때 30-50ms 걸려 rollout 병목 — 추가 최적화 여지
+- **Solver-dependent candidates.** Legal-move enumeration is done by the solver (a rules engine); the network makes every *selection*. A fully end-to-end network that also generates moves is future work.
+- **Teacher-bounded discovery.** Distillation cannot invent strategies the teacher never demonstrates (an ExIt limitation).
+- **Single game / rule / teacher.** Results are for two-player Rummikub at meld ≥ 30 with one teacher configuration; cross-game transfer is a conjecture, not a demonstrated result.
+- **Luck-heavy game.** Deal variance is large (greedy beats a random opponent only ~52%); absolute win-rate ceilings are game-specific, which is why all comparisons use mirror-paired evaluation.
 
 ---
 
-## 10. 라운드별 진척 요약
-
-| 라운드 | 주요 변경 | 결과 | 다음 단계 |
-|---|---|---|---|
-| 초기 | 조커 있음, 단순 PPO | - | 조커 제거, deepcopy 제거 |
-| R1 | 조커 X, deepcopy X, 보상 1/10 | best -3.5 (12 ep 노이즈), 100판 평가 46% | LR schedule, clip 0.1, 손패 페널티 |
-| R2 | LR schedule, clip 0.1, 손패 페널티 | best -10.4 (upd 46), 평가 46%/55% | n_steps↑ |
-| R3 | n_steps=1024 | 시간 4.5시간, plateau ~47% | VecEnv |
-| R4 | SubprocVecEnv (10 envs) | 학습 2배 빠름, 30 ep/update, 100판 평가 49%/52% (det/stoch) | 보상 재설계 |
-| R5 | 상대 패 obs, draw bias=-2.0, margin 보상, per-turn 손패 페널티 제거 | 40 updates 정체, chosen_draw→0, es≈0 | 후보 다양성 부족 진단 |
-| R6 | tile-count 다양화 (Phase 1+2), max_candidates 10→20 | 55 updates, win ~47%, es ~-0.3, best=-6.45 (upd 10 이후 정체) | benchmark 깊은 분석 |
-| **R7 (현재)** | 선공 교대 (alternate_first_player) + 30점 초기 등록 룰 (initial_meld_value=30) | 진행 예정 | 결과 분석 후 결정 |
-
-### R6 → R7 전환의 핵심 발견 (벤치마크 분석)
-
-R6 최종 평가에서 매우 충격적인 결과가 나타남
-
-```text
-PPO det vs ILP (100 ep):    43% 승리
-PPO det vs Random (100 ep): 40% 승리
-Random vs ILP (50 ep):      44% 승리
-Random vs Random (50 ep):   30% 승리 ← ?
-```
-
-#### 발견 1: 게임은 본질적으로 대칭
-
-`verify_symmetry.py`로 100판 random-random 시뮬레이션
-
-```text
-P0 wins      : 50 (50.0%)
-P1 wins      : 50 (50.0%)
-P0 win rate 95% CI: [40.2%, 59.8%]
-→ Cannot distinguish from symmetric play.
-```
-
-게임 자체는 50/50 대칭. R6 eval의 "Random vs Random 30%"는 **측정 artifact**였음 — eval의 PPO random은 `np.random.default_rng` 단일 스트림, opponent는 `random.Random` 매 episode 리셋. 두 RNG 타입/생명주기 비대칭이 통계 분포를 비틀어 30/70 만듦.
-
-#### 발견 2: PPO가 약하게 보수적
-
-각 정책의 play turn당 평균 낸 타일 수
-
-| 정책 | tiles/play |
-|---|---|
-| PPO det vs ILP | 1.66 |
-| Random vs ILP | 1.87 |
-| Random vs Random | 1.89 |
-
-PPO가 random 대비 약 10% 적게 냄. R5에서 매 턴 손패 페널티 제거 + margin 보상 도입이 정책을 약하게 보수적으로 만든 효과. dramatic하지는 않음.
-
-#### 발견 3: ILP greedy가 생각보다 강하지 않음
-
-Random vs ILP 44% / PPO vs ILP 43% — random과 PPO가 ILP 상대로 사실상 동등. ILP greedy의 myopia가 random 정도의 정책에도 견고하게 우위 못 가짐. PPO의 학습 향상은 제한적.
-
-#### R7 도입 동기
-
-게임은 대칭이지만 R7 두 변경이 여전히 가치 있음
-
-- **선공 교대 (alternate_first_player)**: PPO가 P0/P1 양쪽 위치를 학습. Robustness 향상. eval시 미묘한 RNG asymmetry artifact 회피
-- **30점 초기 등록 룰 (initial_meld_value=30)**: 게임을 더 strategic하게 만듦. 초반 드로우 페이즈, 패 보존 전략, 실제 루미큐브 룰 근접. PPO에게 진짜 학습할 차원 생김
-
-#### R7 룰 적용 대칭성 검증
-
-```text
-50 games random vs random + initial_meld_value=30:
-P0 wins: 24 (48.0%)
-P1 wins: 26 (52.0%)
-avg turns: 40.9 (vs 42.0 without 30-meld; comparable)
-→ Symmetric ✓
-```
-
-30점 룰 추가해도 게임 대칭성 유지. 게임 길이도 거의 동일 (40.9 vs 42.0).
-
-#### R7 새 지표: pre/post meld 드로우 분리
-
-R5/R6의 `chosen_draw`는 등록 전후를 구분 못 했음. 30점 룰 도입으로 의미 변화
-
-- **등록 전 forced draw**: 30+ 콤보 만들 수 없어 강제 드로우 — 게임 본질, 정책과 무관
-- **등록 후 forced draw**: 후보 0개로 어쩔 수 없는 드로우 — 게임 본질
-- **등록 후 chosen draw**: 후보 있지만 정책이 의도적으로 드로우 — **진짜 정책 결정**
-
-R7 학습 로그/평가 출력 예시
-
-```text
-draw=0.54(pre.f=0.10 pre.c=0.00 post.f=0.41 post.c=0.03) premeld=0.14
-```
-
-해석
-
-- 전체 드로우 54% 중
-- 10%는 등록 전 강제 (30+ 콤보 부재)
-- 0%는 등록 전 의도적 (드물게 의미 있는 strategic)
-- 41%는 등록 후 강제 (후보 부재)
-- **3%만이 등록 후 의도적 드로우** ← 정책의 진짜 strategic 행동
-- 14%는 어떤 형태로든 등록 전 단계 turn (드로우 + 등록 완성 play 포함)
-
-이전 R6의 `chosen=0.001`이 사실상 그대로지만, 의미가 더 정확. R7에서 정책이 등록 전 의도 드로우(pre.c) 또는 등록 후 의도 드로우(post.c)를 학습하는지 명확히 측정 가능.
-
-#### R7 환경 변경 요약 (코드)
-
-- `rummikub_solver.py`: `solve()`에 `min_play_value`, `ignore_table` 파라미터 추가
-- `rummikub_env.py`: `apply_solution(append_to_table=False)` 옵션 추가
-- `ppo_env.py`:
-  - `__init__`: `alternate_first_player`, `initial_meld_value` 파라미터
-  - `STATE_DIM`: 106 → 108 (meld_done flags 2개 추가)
-  - `_meld_params(player_id)`: 솔버 파라미터 헬퍼
-  - `_opponent_turn()`: opponent 한 턴을 별도 메서드로
-  - `reset()`: 알터네이션 + ppo_player=1이면 opponent 먼저 한 턴
-  - `step()`, `_compute_obs()`: meld 상태 기반 솔버 호출
-  - info dict에 `ppo_player` 추가
-- `train_ppo.py`, `eval_ppo.py`: CLI 옵션 `--alternate-first-player`, `--initial-meld-value`
-
-### R5에서 측정으로 검증된 발견 ⭐
-
-Smoke test (4 envs × 64 steps × 2 updates)에서 즉시 드러난 사실
-
-```text
-upd 1: draw=0.50(f=0.48 c=0.02) wm=3.3 lm=1.0 es=+2.25
-upd 2: draw=0.54(f=0.52 c=0.02) wm=4.0 lm=1.0 es=+2.12
-```
-
-#### 발견 1: draw_ratio ~0.5의 96%는 강제 드로우
-
-- 이전 R1~R4 라운드에서 plateau로 보인 `draw=0.53`
-- **정책의 문제가 아님** — 게임 본질
-- 손패 + 테이블로 유효 세트를 못 만드는 상황이 평균 ~50%
-- 정책이 의도적으로 드로우하는 비율(`chosen`)은 단 2-3%
-- 따라서 "드로우를 더 줄이기" 방향의 개선은 효과 미미할 것
-
-#### 발견 2: Margin 신호가 정책 차별화에 적합
-
-- R1~R4 평가는 모두 win_rate 46~52%에서 통계적으로 구별 불가
-- R5에서 `expected_score` 측정으로 "잘 이기고 잘 진다"를 정량화
-- 작은 표본(4-8 게임)에서도 `es=+2.25`로 정책의 강함이 보임
-- 향후 라운드 간 비교는 `es`를 1순위로 봐야 함
-
-### R6에서 측정으로 검증된 발견 ⭐
-
-**핵심 진단 (R5 정체 분석)**
-
-R5의 정체 원인 측정으로 확인:
-
-- `solve_many`의 모든 10개 후보가 max-play 변형 (사실상 같은 전략)
-- PPO 입장에서 "이 7장 vs 저 7장" 선택만 가능
-- "덜 내고 보존" 전략은 **표현 자체 불가**
-
-**솔루션 측정 (`measure_solutions.py`, 414 positions, 10 games)**
-
-```text
-solution 분포:
-  0 solutions:    55%  (forced draw, 게임 본질)
-  1-4 solutions:  26%
-  5-9 solutions:   5%
-  10-19:           4%
-  20-49:           3%
-  50-99:           2%
-  100+ (capped):   5%
-```
-
-평균 ILP 호출 시간: 142ms (예상 7ms의 20배). p99 enum: 23초.
-
-**90% 위치는 ≤20 solutions로 커버**. 다만 그 20 solutions 중 대부분이 max-play 변형 → user 통찰
-
-**R6 다양화 검증 (smoke test)**
-
-예: seed=10 t=0, hand=14
-
-```text
-R5 (이전): 7개 후보 모두 7장 내기 변형 (dist={7:7})
-R6 (현재): 7개 후보 = {7:1, 6:2, 4:1, 3:3} (tile_count 다양화)
-```
-
-이제 PPO에게 진짜 전략적 선택지 제공:
-- "7장 내고 압승 모드"
-- "6장 내고 1장 보관"
-- "3장만 내고 4장 보관" (수비적)
-- "드로우"
-
-### R6의 알려진 우려 사항 / 검증 필요 항목
-
-#### 1. 학습 시간 증가
-
-- ILP 호출: 약 10 → 약 15-20회/턴 (Phase 1 시도 + Phase 2 보충)
-- update당 시간: 100s → ~150s 예상
-- 100 updates 총 시간: 3시간 → 4-5시간
-
-#### 2. ML 효율성
-
-- max_candidates 10 → 20
-- update당 30 episodes × 40 turns = 1200 결정을 21개 action에 분산
-- action당 평균 ~57 visits (수용 가능)
-- 단 학습 신호 노이즈 약간 ↑
-
-#### 3. exact_hand_tiles_used 제약의 실현 가능성
-
-- 어떤 k는 infeasible (예: hand+table로 정확히 5장 내는 게 불가능)
-- Phase 1이 모든 k를 채우진 못함
-- 측정에서 본 dist={7:1, 6:2, 4:1, 3:3} — k=5, 2, 1이 빠짐
-- 정상 (제약이 너무 엄격해서)
-
-#### 4. 정책이 reduced-play를 사용하는지
-
-- chosen_draw가 R5에서 0으로 수렴했듯이
-- R6의 "1장만 내기" 옵션도 학습 후 사용 안 될 가능성
-- 학습 결과의 tile_count 분포 측정 필요
-
-#### 5. 체크포인트 호환성
-
-- max_candidates 10 → 20, action space (11→21)
-- R5 best.pt는 R6 코드로 **로드 가능** (model architecture는 N-invariant)
-- 단 mask shape 다르므로 학습 재개 시 buffer shape 주의 필요
-
-### R5의 알려진 우려 사항 / 검증 필요 항목
-
-#### 1. 체크포인트 호환성 깨짐
-
-- `STATE_DIM` 105 → 106으로 변경
-- 모든 R1~R4 모델 파일 (`rummikub_ppo_best.pt` 등)을 R5 코드로 **로드 불가**
-- `--resume`도 R5 이전 체크포인트엔 사용 불가
-- 백업이 필요하면 학습 시작 전 미리 rename:
-
-  ```bash
-  mv rummikub_ppo_best.pt rummikub_ppo_best_r4.pt
-  mv rummikub_ppo_model.pt rummikub_ppo_model_r4.pt
-  mv train_log.csv train_log_r4.csv
-  ```
-
-#### 2. 보상 magnitude 변화
-
-- 매 턴 손패 페널티 (`-0.02 × hand_size`) 제거로 reward 절대값이 작아짐
-- R4: `rew ≈ -15` (큰 음수, 손패 페널티 누적)
-- R5: `rew ≈ -3 ~ -6` 예상
-- → 절대값 직접 비교 X. **상대 변화/expected_score 위주로 봐야 함**
-- critic_loss도 초기 6-25 범위 (이전 5-10보다 살짝 큼) — 정상
-
-#### 3. Reward shaping과 정책 안정성
-
-- 종료 시점 큰 보상(±5~±9)이 dense 보상보다 영향이 큼
-- gamma=0.99로 40턴 할인하면 종료 보상 가치가 약 0.67배 → 여전히 의미 있음
-- 다만 초기 학습 시 critic이 새 보상 분포 학습하느라 actor 신호 약할 수 있음
-- 5~10 updates는 critic 적응 기간으로 봐야 함
-
-#### 4. Timeout margin 처리
-
-- Timeout 시 PPO가 앞서 있으면 `win_margin > 0`, 뒤지면 `loss_margin > 0`
-- 학습 보상: `+0.3 × (ilp_hand - ppo_hand)` (부호 있음, 합리적)
-- 로그 표시: `avg_win_margin`은 wins-only, `avg_loss_margin`은 losses-only, `expected_score`만 timeout 포함
-- timeout 비율이 보통 0%라 영향 미미, 다만 0% 아니어도 부정확하지 않게 분리 추적
-
-#### 5. forced_draw 측정의 정확도
-
-- `mask[:max_candidates].sum() == 0` 인 시점에 드로우 액션을 선택했는가로 판정
-- mask는 PPO 결정 직전 상태 기반 → **정확함**
-- 단 후보 0개이지만 mask[10]=1 (드로우 가능)으로 강제 드로우는 항상 가능
-
-#### 6. Draw head bias 학습 가능성
-
-- 초기 bias=-2.0이지만 학습이 진행되며 bias도 업데이트됨
-- 만약 정책이 "draw가 항상 좋다"고 학습하면 bias가 다시 0 이상으로 올라갈 수 있음
-- chosen_draw가 시간이 갈수록 늘어나면 정상적인 학습 (큰 콤보 대기 발견)
-- 만약 chosen_draw가 0.3+로 증가하면 의심 — 정책이 과도하게 보수적
-
-#### 7. 학습 곡선 해석 변경 필요
-
-- R1~R4의 win_rate 위주 분석은 더 이상 충분치 않음
-- `expected_score` 우상향이 진짜 학습 신호
-- `wm` 증가 (이길 때 압승 정도 ↑)
-- `lm` 감소 (질 때 박빙 정도 ↑)
-- 가능하면 윈도우 평균(5 updates)으로 추세 판단
-
-#### 8. ILP 후보 다양성 한계
-
-- max_candidates=10에서 평균 후보 수는 2.5-3.5
-- "draw 0.5의 chosen 부분 = 0.02"는 후보가 부족해서 어쩔 수 없는 측면 있음
-- 만약 ILP가 더 다양한 후보를 줄 수 있다면 chosen draw가 증가할 가능성
-- 현 단계에서는 max_candidates를 늘리지 않음 (다음 라운드 검토 항목)
-
----
-
-## 11. 빠른 참고
-
-### 11.1 자주 쓰는 명령
-
-```bash
-# 학습 시작
-conda activate rummikub && python train_ppo.py
-
-# 평가 (100판)
-python eval_ppo.py --model rummikub_ppo_best.pt --episodes 100
-
-# 학습 로그 빠르게 보기
-tail -10 train_log.csv | column -ts,
-
-# Best 갱신 추적
-awk -F, 'NR==1 || $NF != prev {print; prev=$NF}' train_log.csv | column -ts,
-```
-
-### 11.2 Best 정책 사용 (사람과 게임)
-
-학습된 best 모델로 사람과 대결하려면 `main.py`를 확장하거나, `eval_ppo.py --verbose`로 정책의 행동을 관찰.
-
-### 11.3 디버깅 모드
-
-VecEnv 대신 단일 프로세스로
-
-```bash
-python train_ppo.py --no-subproc --n-envs 1 --total-updates 2 --n-steps 32
-```
+## References
+
+- Ross, Gordon & Bagnell (2011). *A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning* (DAgger).
+- Anthony, Tian & Barber (2017). *Thinking Fast and Slow with Deep Learning and Tree Search* (Expert Iteration).
+- Long, Sturtevant, Buro & Furtak (2010). *Understanding the Success of Perfect Information Monte Carlo Sampling in Game Tree Search*.
+- van Rijn & Takes (2016). *The Complexity of Rummikub Problems* ([arXiv:1604.07553](https://arxiv.org/abs/1604.07553)).

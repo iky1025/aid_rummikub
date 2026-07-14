@@ -1,9 +1,0 @@
-
-=== mirror eval: rollout vs greedy-ILP ===
-pairs           : 40 (80 games)
-win/loss/timeout: 45/35/0
-win_rate        : 56.2%
-pair patterns   : {'LL': 3, 'LW': 16, 'WL': 13, 'WW': 8}
-mean pair net   : +0.30 ± 0.44 (SE)  [>0 means better than greedy]
-avg steps/game  : 40.4
-elapsed         : 2628.2s (32.85s/game)
