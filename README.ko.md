@@ -106,7 +106,7 @@ conda activate rummikub
 conda install -c conda-forge numpy pytorch pulp highspy gymnasium
 ```
 
-헤드라인 평가 재현. 모델(`*.pt`)과 데이터셋(`data/`)은 추적되지 않으므로 파이프라인으로 재생성합니다:
+우승 모델 `distill_s1s_dagger1.pt`는 저장소에 포함돼 있어 3단계로 바로 평가할 수 있습니다. 그 외 체크포인트와 데이터셋(`data/`)은 추적되지 않으므로 파이프라인으로 재생성합니다:
 
 ```bash
 # 1) DAgger 데이터 생성 (학생이 두고, 교사가 재라벨)

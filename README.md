@@ -107,7 +107,7 @@ conda activate rummikub
 conda install -c conda-forge numpy pytorch pulp highspy gymnasium
 ```
 
-Reproduce the headline evaluations. Models (`*.pt`) and datasets (`data/`) are not tracked — regenerate them with the pipeline:
+The winning model `distill_s1s_dagger1.pt` is included in the repo, so you can jump to step 3 and evaluate directly. Other checkpoints and datasets (`data/`) are not tracked — regenerate them with the pipeline:
 
 ```bash
 # 1) generate DAgger data (student plays, teacher relabels)
