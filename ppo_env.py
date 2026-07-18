@@ -8,7 +8,10 @@ from rummikub_env import RummikubEnv
 from rummikub_solver import COLORS, flatten
 
 
-STATE_DIM = 52 + 52 + 1 + 1 + 1 + 1  # hand + table + deck + opp_hand + meld_ppo + meld_opp
+# hand(52) + table(52) + deck_frac(1) + opp_hand_COUNT(1) + meld_ppo(1) + meld_opp(1).
+# The opponent slot is their hand *size* (len/14), never their tiles — the
+# hidden hand is only ever an aux label / oracle-teacher input, never an obs.
+STATE_DIM = 52 + 52 + 1 + 1 + 1 + 1
 CAND_FEAT_DIM = 52 + 52
 
 
@@ -43,6 +46,7 @@ class RummikubPPOEnv(gym.Env):
         alternate_first_player=False,
         initial_meld_value=0,
         exhaustive_candidates=False,
+        opponent_policy=None,
     ):
         super().__init__()
         self.max_candidates = max_candidates
@@ -50,8 +54,11 @@ class RummikubPPOEnv(gym.Env):
         self.ppo_player = ppo_player
         self.ilp_player = 1 - ppo_player
         self._init_seed = seed
-        assert opponent in ("ilp", "random"), f"unknown opponent: {opponent}"
+        assert opponent in ("ilp", "random", "student"), \
+            f"unknown opponent: {opponent}"
         self.opponent_type = opponent
+        # opponent="student": an injected policy callable obs-dict -> action int
+        self.opponent_policy = opponent_policy
         # R7: alternate ppo_player between 0 and 1 per reset for symmetric training
         self.alternate_first_player = alternate_first_player
         self._next_ppo_player = ppo_player
@@ -163,6 +170,24 @@ class RummikubPPOEnv(gym.Env):
             if r.status == "Optimal" and r.used_hand_tile_count > 0:
                 self.env.apply_solution(r, append_to_table=ignore_tbl)
                 used = r.used_hand_tile_count
+                self.first_meld_done[self.ilp_player] = True
+                if len(self.env.hand) == 0:
+                    won = True
+            else:
+                self.env.draw_tile()
+        elif self.opponent_type == "student":
+            # Drive the opponent with an injected policy. Swap perspective so the
+            # shared _compute_obs (which reads self.ppo_player) encodes from the
+            # opponent's side exactly as during training, then restore.
+            self.ppo_player, self.ilp_player = self.ilp_player, self.ppo_player
+            obs = self._compute_obs()
+            cands = self.last_candidates
+            a = int(self.opponent_policy(obs))
+            self.ppo_player, self.ilp_player = self.ilp_player, self.ppo_player
+            if a < len(cands):
+                picked = cands[a]
+                self.env.apply_solution(picked, append_to_table=ignore_tbl)
+                used = picked.used_hand_tile_count
                 self.first_meld_done[self.ilp_player] = True
                 if len(self.env.hand) == 0:
                     won = True

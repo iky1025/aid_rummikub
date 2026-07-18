@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rummikub vs Student</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1c1f28; --panel2:#242833; --line:#333a48;
+    --txt:#e6e8ee; --dim:#9aa2b1; --accent:#5aa9ff; --good:#4ecb7d; --bad:#e56b6b;
+    --R:#d64545; --B:#3b7dd8; --Y:#e0a020; --K:#2b2f3a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+       background:var(--bg);color:var(--txt)}
+  header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px;
+         background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+  header select,header input,header button{background:var(--panel2);color:var(--txt);
+         border:1px solid var(--line);border-radius:6px;padding:5px 9px;font-size:13px}
+  header button{cursor:pointer}
+  header button.primary{background:var(--accent);color:#08111f;border-color:var(--accent);font-weight:600}
+  .status{margin-left:auto;display:flex;gap:14px;color:var(--dim);font-size:13px;flex-wrap:wrap}
+  .status b{color:var(--txt)}
+  main{max-width:1180px;margin:0 auto;padding:16px;display:grid;
+       grid-template-columns:1fr 340px;gap:16px}
+  @media(max-width:900px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+  .panel h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
+  /* tiles */
+  .tile{display:inline-flex;align-items:center;justify-content:center;width:30px;height:38px;
+        border-radius:6px;font-weight:700;font-size:15px;color:#fff;margin:2px;
+        box-shadow:inset 0 -3px 0 rgba(0,0,0,.25)}
+  .tile.sm{width:24px;height:30px;font-size:12px;border-radius:5px}
+  .tile.R{background:var(--R)} .tile.B{background:var(--B)}
+  .tile.Y{background:var(--Y)} .tile.K{background:var(--K);color:#dfe3ec;border:1px solid #444}
+  .set{display:inline-flex;padding:3px;margin:3px;border:1px dashed var(--line);border-radius:8px;background:#0000001a}
+  .hand{display:flex;flex-wrap:wrap}
+  /* candidate cards */
+  .cards{display:flex;flex-direction:column;gap:8px}
+  .card{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--panel2);
+        cursor:pointer;transition:.1s;display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .card:hover{border-color:var(--accent)}
+  .card .lead{font-weight:600;min-width:74px}
+  .badge{font-size:11px;padding:2px 7px;border-radius:20px;background:#2c3444;color:var(--dim)}
+  .badge.hint{background:#264a34;color:var(--good)}
+  .badge.g{background:#2b3a52;color:var(--accent)}
+  .drawbtn{background:var(--panel2);border:1px dashed var(--line)}
+  /* ranking bars */
+  .rank{display:flex;flex-direction:column;gap:5px}
+  .rrow{display:flex;align-items:center;gap:8px;font-size:13px}
+  .rrow .bar{height:16px;border-radius:4px;background:var(--accent);min-width:2px}
+  .rrow.chosen{background:#1d3350;border-radius:6px;padding:2px 4px;margin:0 -4px}
+  .rrow .lg{width:52px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
+  .rrow .tiny{opacity:.9}
+  /* aux heatmap */
+  .heat{display:grid;grid-template-columns:auto repeat(13,1fr);gap:2px;font-size:10px}
+  .heat .hd{color:var(--dim);text-align:center}
+  .heat .cell{aspect-ratio:1;border-radius:3px;display:flex;align-items:center;justify-content:center;
+        color:#0009;font-weight:700}
+  .rlabel{color:var(--dim);display:flex;align-items:center;justify-content:flex-end;padding-right:3px;font-weight:700}
+  .rlabel.R{color:var(--R)} .rlabel.B{color:var(--B)} .rlabel.Y{color:var(--Y)} .rlabel.K{color:#aeb4c2}
+  .log{font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--dim);max-height:220px;overflow:auto}
+  .log .m{color:var(--accent)} .log .h{color:var(--good)} .log .g{color:#d8a24a}
+  .banner{padding:10px 14px;border-radius:8px;font-weight:600;text-align:center;margin-bottom:14px}
+  .banner.win{background:#173a26;color:var(--good)} .banner.lose{background:#3a1a1a;color:var(--bad)}
+  .banner.draw{background:#2a2f3a;color:var(--dim)}
+  .muted{color:var(--dim)} .ok{color:var(--good)} .no{color:var(--bad)}
+  .hint-note{font-size:12px;color:var(--dim);margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <select id="mode">
+    <option value="versus">사람 vs 모델</option>
+    <option value="spectate">관전: 모델 vs 그리디</option>
+  </select>
+  <label class="muted" id="firstWrap">선공
+    <select id="first"><option value="human">사람</option><option value="model">모델</option></select>
+  </label>
+  <label class="muted">시드 <input id="seed" type="number" value="2000" style="width:80px"></label>
+  <label class="muted">멜드 <input id="meld" type="number" value="30" style="width:56px"></label>
+  <button class="primary" id="newBtn">새 게임</button>
+  <button id="stepBtn" style="display:none">다음 수 ▶</button>
+  <div class="status" id="status"></div>
+</header>
+
+<main>
+  <div>
+    <div id="bannerWrap"></div>
+    <div class="panel">
+      <h3>테이블 <span class="muted" id="deckInfo"></span></h3>
+      <div id="table"><span class="muted">—</span></div>
+    </div>
+
+    <div class="panel" id="turnPanel">
+      <h3 id="turnTitle">당신 차례 — 낼 수를 고르세요</h3>
+      <div id="turnBody"></div>
+    </div>
+
+    <div class="panel">
+      <h3>내 손패 <span class="muted" id="handCount"></span></h3>
+      <div class="hand" id="hand"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel" id="decisionPanel" style="display:none">
+      <h3>모델의 마지막 결정</h3>
+      <div id="decisionMeta" style="margin-bottom:8px"></div>
+      <div class="rank" id="ranking"></div>
+    </div>
+
+    <div class="panel" id="auxPanel" style="display:none">
+      <h3 id="auxTitle">모델(PC)이 추정한 상대 손패 <span class="muted">(aux 헤드)</span></h3>
+      <div class="heat" id="heat"></div>
+      <div class="hint-note" id="auxNote"></div>
+    </div>
+
+    <div class="panel">
+      <h3>기보</h3>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const COLORS=["R","B","Y","K"];
+const $=id=>document.getElementById(id);
+let DRAW_INDEX=20, MODEL_HINT=-1, SPECTATE=false;
+
+function tile(t,sm){const e=document.createElement("span");e.className="tile "+t.color+(sm?" sm":"");e.textContent=t.number;return e;}
+function tilesRow(arr,sm){const f=document.createDocumentFragment();arr.forEach(t=>f.appendChild(tile(t,sm)));return f;}
+function setEl(s){const d=document.createElement("span");d.className="set";d.appendChild(tilesRow(s,true));return d;}
+
+async function api(path,body){
+  const r=await fetch(path,{method:body?"POST":"GET",headers:{"Content-Type":"application/json"},
+    body:body?JSON.stringify(body):undefined});
+  return r.json();
+}
+
+function render(resp){
+  if(!resp||!resp.state){return;}
+  const s=resp.state;
+  // status bar
+  $("status").innerHTML=
+    `턴 <b>${s.turn}</b>`+
+    ` · 덱 <b>${s.deck_count}</b>`+
+    ` · 모델 손 <b>${s.model_hand_count}</b>`+
+    ` · 내 손 <b>${s.human_hand_count}</b>`+
+    ` · 멜드 당신:${s.first_meld_done[s.human_seat]?"✓":"✗"} 모델(PC):${s.first_meld_done[s.model_seat]?"✓":"✗"}`;
+  SPECTATE=s.spectate;
+  $("deckInfo").textContent=`(${s.table.length} 세트)`;
+
+  // table
+  const tb=$("table");tb.innerHTML="";
+  if(!s.table.length) tb.innerHTML='<span class="muted">비어 있음</span>';
+  else s.table.forEach(st=>tb.appendChild(setEl(st)));
+
+  // my hand
+  $("hand").innerHTML="";$("hand").appendChild(tilesRow(s.human_hand,false));
+  $("handCount").textContent=`(${s.human_hand.length}장)`;
+
+  // banner / outcome
+  const bw=$("bannerWrap");bw.innerHTML="";
+  if(s.outcome){
+    const map=s.spectate
+      ? {model:["모델 승",""],human:["그리디 승",""],draw:["무승부",""]}
+      : {model:["모델 승 — 당신 패배","lose"],human:["당신 승리! 🎉","win"],draw:["무승부","draw"]};
+    const [txt,cls]=map[s.outcome]||["종료",""];
+    const b=document.createElement("div");b.className="banner "+(s.spectate?(s.outcome==="model"?"win":"lose"):cls);
+    b.textContent=txt;bw.appendChild(b);
+    if(s.model_hand){const note=document.createElement("div");note.className="hint-note";
+      note.textContent="모델(PC) 손패 공개:";const wrap=document.createElement("div");wrap.className="hand";
+      wrap.appendChild(tilesRow(s.model_hand,true));bw.appendChild(note);bw.appendChild(wrap);}
+  }
+
+  renderTurn(resp,s);
+  renderDecision(resp.model_decision);
+  renderLog(s.log);
+
+  // step button only in spectate & not finished
+  $("stepBtn").style.display=(s.spectate&&!s.outcome)?"":"none";
+}
+
+function renderTurn(resp,s){
+  const title=$("turnTitle"),body=$("turnBody");body.innerHTML="";
+  if(s.outcome){title.textContent="게임 종료";body.innerHTML='<span class="muted">새 게임을 시작하세요.</span>';return;}
+  if(s.spectate){title.textContent="관전 모드";
+    body.innerHTML='<span class="muted">‘다음 수 ▶’로 한 수씩 진행. 오른쪽에서 모델의 후보 랭킹을 보세요.</span>';return;}
+  const opt=resp.human_options;
+  if(!opt){title.textContent="모델 차례…";body.innerHTML='<span class="muted">모델이 두는 중.</span>';return;}
+  MODEL_HINT=opt.model_hint_index; DRAW_INDEX=opt.draw_index;
+  title.textContent="당신 차례 — 낼 수를 고르세요";
+  const cards=document.createElement("div");cards.className="cards";
+  opt.options.forEach(o=>{
+    const c=document.createElement("div");c.className="card";c.onclick=()=>move(o.index);
+    const lead=document.createElement("span");lead.className="lead";lead.textContent=`${o.played_count}장 내기`;
+    c.appendChild(lead);
+    c.appendChild(tilesRow(o.played,true));
+    if(o.index===MODEL_HINT){const b=document.createElement("span");b.className="badge hint";b.textContent="모델이라면 이 수";c.appendChild(b);}
+    const lg=document.createElement("span");lg.className="badge";lg.textContent=`logit ${o.model_logit.toFixed(2)}`;c.appendChild(lg);
+    cards.appendChild(c);
+  });
+  // draw
+  const d=document.createElement("div");d.className="card drawbtn";d.onclick=()=>move(DRAW_INDEX);
+  const dl=document.createElement("span");dl.className="lead";dl.textContent="드로우";d.appendChild(dl);
+  if(MODEL_HINT===DRAW_INDEX){const b=document.createElement("span");b.className="badge hint";b.textContent="모델이라면 이 수";d.appendChild(b);}
+  const dlg=document.createElement("span");dlg.className="badge";dlg.textContent=`logit ${opt.draw_logit.toFixed(2)}`;d.appendChild(dlg);
+  cards.appendChild(d);
+  body.appendChild(cards);
+  if(!opt.options.length){const n=document.createElement("div");n.className="hint-note";
+    n.textContent="낼 수 있는 조합이 없습니다 — 드로우만 가능.";body.insertBefore(n,cards);}
+}
+
+function renderDecision(md){
+  const panel=$("decisionPanel"),aux=$("auxPanel");
+  if(!md){panel.style.display="none";aux.style.display="none";return;}
+  panel.style.display="";
+  const chosenIsDraw=md.chose_draw;
+  const match=md.matches_greedy;
+  $("decisionMeta").innerHTML=
+    `선택: <b>${chosenIsDraw?"드로우":"후보 #"+md.chosen_index+" 내기"}</b> · `+
+    `그리디(최다 내기)와 <span class="${match?'ok':'no'}">${match?'일치 ✓':'다른 선택 ✗'}</span>`+
+    `<div class="hint-note">후보는 솔버가 생성, 각 후보의 점수(logit)는 네트워크가 매김. 막대가 길수록 모델이 선호.</div>`;
+  // ranking bars
+  const rows=md.ranking.slice();
+  // append draw as a pseudo-row
+  rows.push({logit:md.draw_logit,index:DRAW_INDEX,played_count:-1,played:[]});
+  const logits=rows.map(r=>r.logit);
+  const mx=Math.max(...logits),mn=Math.min(...logits),span=(mx-mn)||1;
+  const rk=$("ranking");rk.innerHTML="";
+  rows.forEach(r=>{
+    const isDraw=r.played_count===-1;
+    const chosen=isDraw?chosenIsDraw:(r.index===md.chosen_index&&!chosenIsDraw);
+    const row=document.createElement("div");row.className="rrow"+(chosen?" chosen":"");
+    const lg=document.createElement("span");lg.className="lg";lg.textContent=r.logit.toFixed(2);row.appendChild(lg);
+    const bar=document.createElement("span");bar.className="bar";
+    bar.style.width=(6+90*(r.logit-mn)/span)+"px";
+    if(!chosen)bar.style.opacity=.55;row.appendChild(bar);
+    const desc=document.createElement("span");desc.className="tiny";
+    if(isDraw)desc.textContent="드로우";
+    else{desc.textContent=`${r.played_count}장: `;desc.appendChild(tilesRow(r.played,true));}
+    row.appendChild(desc);
+    if(chosen){const b=document.createElement("span");b.className="badge g";b.textContent="선택";row.appendChild(b);}
+    rk.appendChild(row);
+  });
+  renderAux(md.aux_pred);
+}
+
+function renderAux(pred){
+  const aux=$("auxPanel");if(!pred){aux.style.display="none";return;}
+  aux.style.display="";
+  const who=SPECTATE?"그리디 상대":"당신(사람)";
+  $("auxTitle").innerHTML=`모델(PC)이 추정한 ${who}의 손패 <span class="muted">(aux 헤드)</span>`;
+  $("auxNote").textContent=`진할수록 ${who}이(가) 그 타일을 쥐고 있다고 모델(PC)이 추정. 실제 손패가 아니라 모델 내부의 믿음일 뿐이며, 최종 수 선택엔 직접 관여하지 않습니다.`;
+  const h=$("heat");h.innerHTML="";
+  const corner=document.createElement("div");corner.className="hd";h.appendChild(corner);
+  for(let n=1;n<=13;n++){const d=document.createElement("div");d.className="hd";d.textContent=n;h.appendChild(d);}
+  const mx=Math.max(0.5,...pred);
+  COLORS.forEach((col,ci)=>{
+    const lab=document.createElement("div");lab.className="rlabel "+col;lab.textContent=col;h.appendChild(lab);
+    for(let n=0;n<13;n++){
+      const v=pred[ci*13+n];const cell=document.createElement("div");cell.className="cell";
+      const a=Math.min(1,v/mx);
+      const base={R:[214,69,69],B:[59,125,216],Y:[224,160,32],K:[150,156,170]}[col];
+      cell.style.background=`rgba(${base[0]},${base[1]},${base[2]},${0.08+0.92*a})`;
+      if(v>=0.4)cell.textContent=v.toFixed(1);
+      h.appendChild(cell);
+    }
+  });
+}
+
+function renderLog(log){
+  const el=$("log");el.innerHTML="";
+  log.forEach(line=>{
+    const d=document.createElement("div");
+    let cls="";if(line.startsWith("[model]"))cls="m";else if(line.startsWith("[human]"))cls="h";else if(line.startsWith("[greedy]"))cls="g";
+    d.className=cls;d.textContent=line;el.appendChild(d);
+  });
+  el.scrollTop=el.scrollHeight;
+}
+
+async function move(action){
+  render(await api("/api/human",{action}));
+}
+async function step(){render(await api("/api/step",{}));}
+async function newGame(){
+  render(await api("/api/new",{
+    mode:$("mode").value,first:$("first").value,
+    seed:parseInt($("seed").value),meld:parseInt($("meld").value)}));
+}
+
+$("newBtn").onclick=newGame;
+$("stepBtn").onclick=step;
+$("mode").onchange=()=>{$("firstWrap").style.display=$("mode").value==="spectate"?"none":"";};
+window.onload=async()=>{const r=await api("/api/state");if(r&&r.state)render(r);else newGame();};
+</script>
+</body>
+</html>

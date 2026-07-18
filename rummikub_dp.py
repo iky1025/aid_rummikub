@@ -79,10 +79,22 @@ def _build_run_transitions():
 RUN_TRANS = _build_run_transitions()
 EMPTY_PAIR = (0, 0)
 SAFE = {0, 3}
+_MISS = object()  # sentinel: distinguishes "not cached" from a cached None
 
 
 class RummikubDP:
     """Single-turn optimizer. Counts are per (color_idx, number)."""
+
+    def __init__(self):
+        # B-0 (2026-07-19): memoize solve. Profiling showed the DP dominates
+        # teacher-decision time and many calls repeat (the determinizations and
+        # enumerate_moves re-solve identical (hand, table) positions; feasible()
+        # routes through solve() too). Keyed on the exact multiset inputs. The
+        # cached (used, sets) is never mutated by any caller — every consumer
+        # copies via list(s) / Counter(s) / flatten (audited) — so sharing the
+        # object is safe. Verified byte-identical via solver_regression.py.
+        self._cache = {}
+        self._cache_cap = 1_000_000
 
     def solve(self, hand_counter, table_counter, min_play_value=0):
         """Maximize hand tiles used; all table tiles must be used.
@@ -93,6 +105,18 @@ class RummikubDP:
         min_play_value > 0: only count solutions whose played-hand value
         meets the threshold (returns best such, else None).
         """
+        ckey = (frozenset(hand_counter.items()),
+                frozenset(table_counter.items()), min_play_value)
+        cached = self._cache.get(ckey, _MISS)
+        if cached is not _MISS:
+            return cached
+        result = self._solve_uncached(hand_counter, table_counter, min_play_value)
+        if len(self._cache) >= self._cache_cap:
+            self._cache.clear()
+        self._cache[ckey] = result
+        return result
+
+    def _solve_uncached(self, hand_counter, table_counter, min_play_value=0):
         avail = {}
         mand = {}
         for c in range(4):

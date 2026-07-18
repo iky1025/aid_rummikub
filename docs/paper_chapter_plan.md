@@ -54,7 +54,7 @@ Key sentence: "A forward-only network beats the optimal one-turn baseline 70.3% 
 | E3 | **Ablation:** identical candidate set, 3 selection functions | Source of the edge? | random 40.6 / greedy(max-tiles) 46.2 / **network 70.3** |
 | E4 | Deviation instrumentation + **derived: deviation quality** | Not a copier + teacher-aligned? | 34.2% override, 19.5% strategic holding; won/lost parity (34.4 vs 33.7); **deviation quality (30 pairs, 1,191 dec, fresh seeds 4000+): overall student↔teacher agreement 75.1%; when teacher deviates → student deviates 77.4% (exact-move 48.7%); when teacher greedy → student stays greedy 82.5%. Honest nuance: student deviates more than teacher (34.2% vs 21.9%) — possible source of teacher-exceeding.** |
 | E5 | Generalization: student vs random | Opponent-specific? | **70.3%** (vs greedy's 52.5% vs random) |
-| E6 | Large-scale confirmation (1,000 pairs, fresh seeds) | Tighten significance | **[server run: PENDING, SE~1.4%]** |
+| E6 | Large-scale confirmation (1,000 pairs = 2,000 games, seeds 3000+) | Tighten significance | **student vs greedy 67.8% (+0.29), vs random 69.6% (+0.83); refs: greedy-random 55.5%, sanity 49.8%≈50% (harness fair at scale). SE~1%** |
 - **Setup note:** mirror-pair (duplicate-deal) evaluation for variance reduction; meld=30; seeds disjoint across train/tune/eval.
 - **Headline = E1; rigor spine = E3.** Two surprises reported: exceeds teacher; random < greedy.
 

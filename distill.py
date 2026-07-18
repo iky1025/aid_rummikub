@@ -35,17 +35,53 @@ def load_dataset(data_dir):
     for f in files:
         with np.load(f) as z:
             n = len(z["action"])
+            n_actions = z["mask"].shape[1]  # max_candidates + 1, from the data
             for k in z.files:
                 parts.setdefault(k, []).append(z[k])
             for k in optional:
                 if k not in z.files:
                     parts.setdefault(k, []).append(
-                        np.full((n, 21), np.nan, dtype=np.float32))
+                        np.full((n, n_actions), np.nan, dtype=np.float32))
     data = {k: np.concatenate(v) for k, v in parts.items()}
     n = len(data["action"])
     print(f"loaded {n} decisions from {len(files)} pairs "
           f"({data_dir})", flush=True)
     return data
+
+
+def check_label_convention(data):
+    """Guard the load-bearing (and *accidental*) label-index convention.
+
+    Arrangement-only variants of the same move are byte-identical in
+    cand_feats (tiles_to_vector drops the partition), so ~45% of candidate
+    slots are exact duplicates. Everything downstream relies on:
+
+      the teacher's action is always the LOWEST index of its duplicate group
+
+    which holds because rollout_agent dedupes by remaining_hand keeping the
+    first occurrence (`chosen`), and candidate 0 is its own group's first.
+    torch.argmax happens to break ties the same way (lowest index), which is
+    why val_acc / `action != 0` deviation stats are meaningful at all.
+
+    This alignment is a coincidence of two independent implementations. If
+    candidate ordering ever changes (e.g. enumerate_moves sorts by
+    -used_hand_tile_count), it breaks *silently*. Fail loudly instead.
+    """
+    cf, act, nc = data["cand_feats"], data["action"], data["n_candidates"]
+    viol = 0
+    for r in range(len(act)):
+        a, n = int(act[r]), int(nc[r])
+        if n == 0 or a >= n:
+            continue  # forced turn, or draw (action == max_candidates)
+        if a and (cf[r, :a] == cf[r, a]).all(axis=1).any():
+            viol += 1
+    if viol:
+        raise SystemExit(
+            f"label convention broken in {viol}/{len(act)} rows: the teacher's "
+            f"action is not the first index of its duplicate group. Candidate "
+            f"ordering changed — val_acc and `action != 0` deviation stats are "
+            f"no longer meaningful. See check_label_convention().")
+    return viol
 
 
 def make_split(data, val_frac=0.1):
@@ -178,7 +214,12 @@ def main():
     parser.add_argument("--max-candidates", type=int, default=20)
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--seed", type=int, default=0,
+                        help="seed for torch weight init (data split / batch "
+                             "order stay fixed) — lets multi-seed runs average "
+                             "out training-instance noise")
     args = parser.parse_args()
+    torch.manual_seed(args.seed)
 
     if args.device:
         device = torch.device(args.device)
@@ -187,6 +228,7 @@ def main():
                               else "cpu")
 
     data = load_dataset(args.data)
+    check_label_convention(data)
     # Unify the two teacher-evaluation channels into one score matrix:
     # rollout scores as-is; endgame win-forcing vote fractions scaled to the
     # same units (fraction x WIN_SCORE ~ forced-win expected value).
