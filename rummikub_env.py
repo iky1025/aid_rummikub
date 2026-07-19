@@ -6,6 +6,7 @@ from rummikub_solver import (
     COLORS,
     NUMBERS,
     COPIES_PER_TILE,
+    JOKER,
     Tile,
     RummikubILPSolver,
     flatten,
@@ -13,15 +14,19 @@ from rummikub_solver import (
     validate_table_sets,
 )
 
+NUM_JOKERS = 2  # official Rummikub has 2 jokers (106 tiles total)
+
 
 class RummikubEnv:
     def __init__(
         self,
         seed: Optional[int] = None,
         hand_size: int = 14,
+        with_jokers: bool = False,
     ):
         self.random = random.Random(seed)
         self.hand_size = hand_size
+        self.with_jokers = with_jokers
         self.solver = RummikubILPSolver()
 
         self.deck = []
@@ -37,6 +42,10 @@ class RummikubEnv:
             for color in COLORS:
                 for number in NUMBERS:
                     deck.append(Tile(color, number))
+
+        if self.with_jokers:
+            for _ in range(NUM_JOKERS):
+                deck.append(Tile(JOKER.color, JOKER.number))
 
         return deck
 

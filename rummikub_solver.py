@@ -10,6 +10,13 @@ NUMBERS = range(1, 14)
 
 COPIES_PER_TILE = 2
 
+# R11 (Track B, jokers): the wildcard tile. color "J", number 0 — a sentinel
+# distinct from every real (R/B/Y/K, 1..13) tile. A joker in a set stands for
+# whatever real tile makes the run/group valid; held in hand at game end it is a
+# 30-point penalty (see ppo_env._score). 2 jokers exist in a full deck.
+JOKER = None  # set after Tile is defined
+JOKER_VALUE = 30
+
 
 @dataclass(frozen=True)
 class Tile:
@@ -17,7 +24,14 @@ class Tile:
     number: int
 
     def __repr__(self):
-        return f"{self.color}{self.number}"
+        return "JJ" if self.color == "J" else f"{self.color}{self.number}"
+
+    @property
+    def is_joker(self):
+        return self.color == "J"
+
+
+JOKER = Tile("J", 0)
 
 
 def parse_tile(label):
@@ -85,6 +99,12 @@ def is_valid_set(tile_set):
     if len(tile_set) < 3:
         return False
 
+    jokers = sum(1 for t in tile_set if t.is_joker)
+    reals = [t for t in tile_set if not t.is_joker]
+    if jokers:
+        return _joker_group_ok(reals, jokers, len(tile_set)) or \
+            _joker_run_ok(reals, jokers, len(tile_set))
+
     colors = [tile.color for tile in tile_set]
     numbers = [tile.number for tile in tile_set]
 
@@ -101,6 +121,39 @@ def is_valid_set(tile_set):
         return True
 
     return False
+
+
+def _joker_group_ok(reals, jokers, total):
+    """Can `reals` + `jokers` wildcards form a valid group (same number, distinct
+    colors, size 3-4)?"""
+    if total not in (3, 4):
+        return False
+    if not reals:
+        return True  # all jokers, size 3-4 -> pick any number/colors
+    numbers = {t.number for t in reals}
+    colors = [t.color for t in reals]
+    return len(numbers) == 1 and len(set(colors)) == len(colors)
+
+
+def _joker_run_ok(reals, jokers, total):
+    """Can `reals` + `jokers` wildcards form a valid run (one color, consecutive,
+    length >=3, within 1..13)? Jokers fill the gaps."""
+    if total < 3:
+        return False
+    if not reals:
+        return total <= 13  # all jokers -> any consecutive window fits
+    if len({t.color for t in reals}) != 1:
+        return False
+    nums = [t.number for t in reals]
+    if len(set(nums)) != len(nums):  # a run can't repeat a number
+        return False
+    lo, hi = min(nums), max(nums)
+    if hi - lo + 1 > total:          # reals span wider than the window
+        return False
+    # need a length-`total` window [s, s+total-1] within [1,13] covering [lo,hi]
+    s_min = max(1, hi - total + 1)
+    s_max = min(lo, 13 - total + 1)
+    return s_min <= s_max
 
 
 def validate_table_sets(table_sets):

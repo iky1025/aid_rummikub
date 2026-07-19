@@ -41,12 +41,23 @@ def _wrap_endgame(base_policy, args):
         seed=args.seed,
     )
     trigger = delegate.search_hand_trigger
+    tau = getattr(args, "endgame_tau", 0.0)
 
     def policy(env, obs):
         my = len(env.hands[env.ppo_player])
         opp = len(env.hands[env.ilp_player])
-        if min(my, opp) <= trigger:
-            return delegate.select_action(env)
+        if min(my, opp) > trigger:
+            return base_policy(env, obs)
+        act = delegate.select_action(env)
+        if tau <= 0.0:
+            return act  # legacy: fully delegate (greedy fallback + any-vote DFS)
+        # conservative: keep the BASE policy (student) unless the DFS found a
+        # move that forces a win in >= tau of the sampled worlds.
+        ev = delegate.last_eval
+        if ev and ev.get("votes"):
+            best_frac = max(ev["votes"].values())
+            if best_frac >= tau:
+                return act
         return base_policy(env, obs)
     return policy
 
@@ -244,6 +255,12 @@ def main():
     parser.add_argument("--consistent", action="store_true",
                         help="rollout: information-consistent determinization "
                              "(reject samples contradicting opponent draw history)")
+    parser.add_argument("--endgame-tau", type=float, default=0.0,
+                        help="conservative endgame override: only replace the "
+                             "base policy's move with the DFS move when it forces "
+                             "a win in >= this fraction of determinizations "
+                             "(1.0 = all worlds). Below it, keep the base policy. "
+                             "0.0 = legacy behaviour (delegate fully to greedy+DFS).")
     parser.add_argument("--student-history", action="store_true",
                         help="student was trained with --history (opponent-"
                              "event features appended to state)")

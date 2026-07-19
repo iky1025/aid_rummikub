@@ -66,6 +66,34 @@
   .banner.draw{background:#2a2f3a;color:var(--dim)}
   .muted{color:var(--dim)} .ok{color:var(--good)} .no{color:var(--bad)}
   .hint-note{font-size:12px;color:var(--dim);margin-top:8px}
+  /* --- animation additions --- */
+  .tile{will-change:transform}
+  .tile.flip{transition:transform .30s cubic-bezier(.2,.7,.3,1)}
+  .tile.enter{transition:transform .32s cubic-bezier(.2,.7,.3,1),opacity .25s}
+  .pilerow{display:flex;gap:10px;justify-content:flex-end;align-items:stretch;margin-bottom:8px}
+  .pile{display:flex;align-items:center;gap:8px;padding:5px 9px;border:1px solid var(--line);
+        border-radius:8px;background:var(--panel2);font-size:12px;color:var(--dim)}
+  .pile .pilestack{position:relative;width:26px;height:26px;flex:none}
+  .tileback{position:absolute;top:0;width:17px;height:22px;border-radius:4px;
+        background:linear-gradient(135deg,#39506e,#2b3446);border:1px solid #4a5568;
+        box-shadow:inset 0 -2px 0 rgba(0,0,0,.3)}
+  .pilecount{font-weight:700;color:var(--txt);font-variant-numeric:tabular-nums;display:inline-block}
+  .pilecount.tick{animation:tick .34s ease}
+  @keyframes tick{0%{transform:scale(1)}40%{transform:scale(1.4);color:var(--accent)}100%{transform:scale(1);color:var(--txt)}}
+  .banner{animation:bannerpop .42s cubic-bezier(.2,.8,.3,1.2)}
+  @keyframes bannerpop{0%{transform:scale(.9);opacity:0}60%{transform:scale(1.03)}100%{transform:scale(1);opacity:1}}
+  #demobar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;
+        display:flex;gap:8px;align-items:center;background:var(--panel);border:1px solid var(--line);
+        border-radius:10px;padding:8px 12px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #demobar button{background:var(--accent);color:#08111f;border:none;border-radius:6px;
+        padding:6px 12px;font-weight:600;cursor:pointer}
+  #demobar button.ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--line)}
+  #demobar .step{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
+  @media (prefers-reduced-motion: reduce){
+    .tile.flip,.tile.enter{transition:none !important}
+    .pilecount.tick{animation:none !important}
+    .banner{animation:none !important}
+  }
 </style>
 </head>
 <body>
@@ -81,6 +109,9 @@
   <label class="muted">멜드 <input id="meld" type="number" value="30" style="width:56px"></label>
   <button class="primary" id="newBtn">새 게임</button>
   <button id="stepBtn" style="display:none">다음 수 ▶</button>
+  <label class="muted" title="끄면 후보의 모델 추천 배지와 logit 값을 숨깁니다 (블라인드 플레이)">
+    <input id="hintToggle" type="checkbox" checked style="vertical-align:-1px"> 모델 힌트
+  </label>
   <div class="status" id="status"></div>
 </header>
 
@@ -88,6 +119,18 @@
   <div>
     <div id="bannerWrap"></div>
     <div class="panel">
+      <div class="pilerow">
+        <div class="pile" id="modelPile" title="모델(PC)의 손패">
+          모델(PC)
+          <span class="pilestack"><span class="tileback" style="left:0"></span><span class="tileback" style="left:4px"></span><span class="tileback" style="left:8px"></span></span>
+          <span class="pilecount" id="modelPileCount">0</span>
+        </div>
+        <div class="pile" id="deckPile" title="남은 덱">
+          덱
+          <span class="pilestack"><span class="tileback" style="left:0"></span><span class="tileback" style="left:4px"></span><span class="tileback" style="left:8px"></span></span>
+          <span class="pilecount" id="deckPileCount">0</span>
+        </div>
+      </div>
       <h3>테이블 <span class="muted" id="deckInfo"></span></h3>
       <div id="table"><span class="muted">—</span></div>
     </div>
@@ -126,9 +169,9 @@
 <script>
 const COLORS=["R","B","Y","K"];
 const $=id=>document.getElementById(id);
-let DRAW_INDEX=20, MODEL_HINT=-1, SPECTATE=false;
+let DRAW_INDEX=20, MODEL_HINT=-1, SPECTATE=false, SHOW_HINTS=true, LAST_RESP=null;
 
-function tile(t,sm){const e=document.createElement("span");e.className="tile "+t.color+(sm?" sm":"");e.textContent=t.number;return e;}
+function tile(t,sm){const e=document.createElement("span");e.className="tile "+t.color+(sm?" sm":"");e.textContent=t.number;e.dataset.k=t.color+t.number;return e;}
 function tilesRow(arr,sm){const f=document.createDocumentFragment();arr.forEach(t=>f.appendChild(tile(t,sm)));return f;}
 function setEl(s){const d=document.createElement("span");d.className="set";d.appendChild(tilesRow(s,true));return d;}
 
@@ -138,9 +181,90 @@ async function api(path,body){
   return r.json();
 }
 
+// ---- FLIP animation pipeline ----
+const REDUCED=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const TILE_SEL="#table .tile, #hand .tile";
+let PREV_COUNTS={deck:null,model:null};
+
+// Capture old tile rects, partitioned by REGION (hand vs table) → value key → [rect].
+// Region matters: a table tile must only "come from the hand" up to how many of that
+// value the hand actually lost this turn, otherwise identical hand tiles get stolen.
+function captureRects(){
+  const hand=new Map(),table=new Map();
+  const add=(map,el)=>{const k=el.dataset.k;if(!map.has(k))map.set(k,[]);map.get(k).push(el.getBoundingClientRect());};
+  document.querySelectorAll("#hand .tile").forEach(el=>add(hand,el));
+  document.querySelectorAll("#table .tile").forEach(el=>add(table,el));
+  return {hand,table};
+}
+function pileRect(id){const e=$(id);return e?e.getBoundingClientRect():{left:0,top:0};}
+// pop the rect in `arr` closest to target rect `nr` (stable nearest match), or null
+function popNearest(arr,nr){
+  if(!arr||!arr.length)return null;
+  let best=0,bd=Infinity;
+  for(let i=0;i<arr.length;i++){const o=arr[i],d=(o.left-nr.left)**2+(o.top-nr.top)**2;if(d<bd){bd=d;best=i;}}
+  return arr.splice(best,1)[0];
+}
+
+function playFlip(old){
+  const deckR=pileRect("deckPile"),modelR=pileRect("modelPile");
+  const oldHand=old.hand,oldTable=old.table;   // Map key -> [rect]; consumed via popNearest
+  // Measure every NEW tile's rect up front (before applying any transform).
+  const newTable=[...document.querySelectorAll("#table .tile")].map(el=>({el,nr:el.getBoundingClientRect(),k:el.dataset.k}));
+  const newHand =[...document.querySelectorAll("#hand .tile")].map(el=>({el,nr:el.getBoundingClientRect(),k:el.dataset.k}));
+  // Per-value quota of hand→table plays = how many of that value the hand LOST this turn.
+  const newHandCount=new Map();newHand.forEach(o=>newHandCount.set(o.k,(newHandCount.get(o.k)||0)+1));
+  const handLoss=new Map();
+  oldHand.forEach((arr,k)=>handLoss.set(k,Math.max(0,arr.length-(newHandCount.get(k)||0))));
+  // 1) TABLE tiles: prefer staying-on-table, then hand-loss quota, else model pile.
+  newTable.forEach(({el,nr,k})=>{
+    let o=popNearest(oldTable.get(k),nr);        // rearrangement / tile stayed on table
+    if(o){slide(el,o.left-nr.left,o.top-nr.top,false);return;}
+    if((handLoss.get(k)||0)>0){                  // human actually played this value from hand
+      handLoss.set(k,handLoss.get(k)-1);
+      o=popNearest(oldHand.get(k),nr);
+      if(o){slide(el,o.left-nr.left,o.top-nr.top,false);return;}
+    }
+    slide(el,modelR.left-nr.left,modelR.top-nr.top,true);   // model/greedy played it
+  });
+  // 2) HAND tiles: match remaining old-hand rects (stayed), else enter from deck (drew).
+  newHand.forEach(({el,nr,k})=>{
+    const o=popNearest(oldHand.get(k),nr);
+    if(o)slide(el,o.left-nr.left,o.top-nr.top,false);
+    else slide(el,deckR.left-nr.left,deckR.top-nr.top,true);
+  });
+}
+function slide(el,dx,dy,enter){
+  if(!enter&&Math.abs(dx)<1&&Math.abs(dy)<1)return;
+  el.style.transition="none";
+  el.style.transform=`translate(${dx}px,${dy}px)`+(enter?" scale(.55)":"");
+  if(enter)el.style.opacity="0";
+  el.getBoundingClientRect();                       // force reflow → "Invert" locked in
+  requestAnimationFrame(()=>{
+    el.classList.add(enter?"enter":"flip");
+    el.style.transform="";
+    if(enter)el.style.opacity="";
+    el.style.transition="";
+  });
+}
+
+// render = capture (First) → applyState (Last) → playFlip (Invert+Play)
 function render(resp){
+  if(!resp||!resp.state)return;
+  LAST_RESP=resp;                                   // remember for hint-toggle re-render
+  const oldMap=REDUCED?null:captureRects();
+  applyState(resp);
+  if(!REDUCED)playFlip(oldMap);
+}
+
+function applyState(resp){
   if(!resp||!resp.state){return;}
   const s=resp.state;
+  // deck / model piles (+ tick when the count changes)
+  const dc=$("deckPileCount"),mc=$("modelPileCount");
+  if(PREV_COUNTS.deck!==null&&PREV_COUNTS.deck!==s.deck_count){dc.classList.remove("tick");void dc.offsetWidth;dc.classList.add("tick");}
+  if(PREV_COUNTS.model!==null&&PREV_COUNTS.model!==s.model_hand_count){mc.classList.remove("tick");void mc.offsetWidth;mc.classList.add("tick");}
+  dc.textContent=s.deck_count;mc.textContent=s.model_hand_count;
+  PREV_COUNTS.deck=s.deck_count;PREV_COUNTS.model=s.model_hand_count;
   // status bar
   $("status").innerHTML=
     `턴 <b>${s.turn}</b>`+
@@ -197,15 +321,15 @@ function renderTurn(resp,s){
     const lead=document.createElement("span");lead.className="lead";lead.textContent=`${o.played_count}장 내기`;
     c.appendChild(lead);
     c.appendChild(tilesRow(o.played,true));
-    if(o.index===MODEL_HINT){const b=document.createElement("span");b.className="badge hint";b.textContent="모델이라면 이 수";c.appendChild(b);}
-    const lg=document.createElement("span");lg.className="badge";lg.textContent=`logit ${o.model_logit.toFixed(2)}`;c.appendChild(lg);
+    if(SHOW_HINTS&&o.index===MODEL_HINT){const b=document.createElement("span");b.className="badge hint";b.textContent="모델이라면 이 수";c.appendChild(b);}
+    if(SHOW_HINTS){const lg=document.createElement("span");lg.className="badge";lg.textContent=`logit ${o.model_logit.toFixed(2)}`;c.appendChild(lg);}
     cards.appendChild(c);
   });
   // draw
   const d=document.createElement("div");d.className="card drawbtn";d.onclick=()=>move(DRAW_INDEX);
   const dl=document.createElement("span");dl.className="lead";dl.textContent="드로우";d.appendChild(dl);
-  if(MODEL_HINT===DRAW_INDEX){const b=document.createElement("span");b.className="badge hint";b.textContent="모델이라면 이 수";d.appendChild(b);}
-  const dlg=document.createElement("span");dlg.className="badge";dlg.textContent=`logit ${opt.draw_logit.toFixed(2)}`;d.appendChild(dlg);
+  if(SHOW_HINTS&&MODEL_HINT===DRAW_INDEX){const b=document.createElement("span");b.className="badge hint";b.textContent="모델이라면 이 수";d.appendChild(b);}
+  if(SHOW_HINTS){const dlg=document.createElement("span");dlg.className="badge";dlg.textContent=`logit ${opt.draw_logit.toFixed(2)}`;d.appendChild(dlg);}
   cards.appendChild(d);
   body.appendChild(cards);
   if(!opt.options.length){const n=document.createElement("div");n.className="hint-note";
@@ -293,7 +417,73 @@ async function newGame(){
 $("newBtn").onclick=newGame;
 $("stepBtn").onclick=step;
 $("mode").onchange=()=>{$("firstWrap").style.display=$("mode").value==="spectate"?"none":"";};
-window.onload=async()=>{const r=await api("/api/state");if(r&&r.state)render(r);else newGame();};
+// model-hint toggle: hide/show the '이 수' badge + logit badges on human-turn cards.
+// Only affects renderTurn; the right-side decision panel & spectate stay unchanged.
+(function(){
+  const tg=$("hintToggle");if(!tg)return;
+  try{const saved=localStorage.getItem("showHints");if(saved!==null){SHOW_HINTS=saved==="1";tg.checked=SHOW_HINTS;}}catch(e){}
+  tg.onchange=()=>{SHOW_HINTS=tg.checked;try{localStorage.setItem("showHints",SHOW_HINTS?"1":"0");}catch(e){}
+    if(LAST_RESP)render(LAST_RESP);};   // re-render immediately, no server call
+})();
+
+// ---- scripted demo mode (?demo=1) — feeds fake snapshots through render(), no backend ----
+const DEMO=new URLSearchParams(location.search).has("demo");
+function buildDemo(){
+  const t=(c,n)=>({color:c,number:n,label:c+n});
+  const seat={human_seat:0,model_seat:1};
+  const base=(o)=>Object.assign({turn:1,spectate:false,first_meld_done:[false,false],
+    model_hand:null,outcome:null,log:[],human_hand_count:(o.human_hand||[]).length},seat,o);
+  const wrap=(state,opt,dec)=>({state,human_options:opt||null,model_decision:dec||null});
+  // Human holds Y5-7 AND B5-7 from the start. In step 2 the MODEL plays B5-6-7 while
+  // the human still holds B5-6-7 → the exact duplicate-identity case that was buggy.
+  const H0=[t("R",11),t("R",12),t("R",13),t("Y",5),t("Y",6),t("Y",7),t("B",5),t("B",6),t("B",7),
+           t("K",1),t("K",2),t("B",9),t("B",10),t("Y",2),t("Y",3),t("B",2),t("R",8)];
+  const opt0={draw_index:20,draw_logit:-1.2,model_hint_index:0,options:[
+    {index:0,played_count:3,played:[t("R",11),t("R",12),t("R",13)],model_logit:2.4}]};
+  const aux=Array.from({length:52},(_,i)=>Math.max(0,Math.sin(i*0.7)+0.3)*(i%5===0?1.4:0.5));
+  const dec2={chose_draw:false,matches_greedy:true,chosen_index:0,draw_logit:-0.8,aux_pred:aux,
+    ranking:[{logit:2.1,index:0,played_count:6,played:[t("R",5),t("R",6),t("R",7),t("B",5),t("B",6),t("B",7)]},
+             {logit:0.4,index:1,played_count:3,played:[t("B",5),t("B",6),t("B",7)]}]};
+  const tblMeld=[[t("R",11),t("R",12),t("R",13)]];
+  const tblModel=[[t("R",11),t("R",12),t("R",13)],[t("R",5),t("R",6),t("R",7)],[t("B",5),t("B",6),t("B",7)]];
+  const tblRe=[[t("R",11),t("R",12),t("R",13)],[t("R",5),t("B",5),t("Y",5)],[t("R",6),t("B",6),t("Y",6)],[t("R",7),t("B",7),t("Y",7)]];
+  const tblWin=tblRe.concat([[t("B",5),t("B",6),t("B",7)],[t("K",1),t("K",2),t("B",2)],[t("B",9),t("B",10),t("K",7)],[t("Y",2),t("Y",3),t("R",8)]]);
+  const H1=[t("Y",5),t("Y",6),t("Y",7),t("B",5),t("B",6),t("B",7),t("K",1),t("K",2),t("B",9),t("B",10),t("Y",2),t("Y",3),t("B",2),t("R",8)];
+  const H3=H1.concat([t("K",7)]);
+  const H4=[t("B",5),t("B",6),t("B",7),t("K",1),t("K",2),t("B",9),t("B",10),t("Y",2),t("Y",3),t("B",2),t("R",8),t("K",7)];
+  return [
+    wrap(base({turn:1,table:[],human_hand:H0,deck_count:76,model_hand_count:14}),opt0),
+    wrap(base({turn:2,table:tblMeld,human_hand:H1,deck_count:76,model_hand_count:14,first_meld_done:[true,false]})),
+    wrap(base({turn:2,table:tblModel,human_hand:H1,deck_count:76,model_hand_count:8,first_meld_done:[true,true],
+      log:["[model] plays R5 R6 R7 · B5 B6 B7"]}),null,dec2),
+    wrap(base({turn:3,table:tblModel,human_hand:H3,deck_count:75,model_hand_count:8,first_meld_done:[true,true],
+      log:["[model] plays R5 R6 R7 · B5 B6 B7","[human] draws"]}),null,dec2),
+    wrap(base({turn:4,table:tblRe,human_hand:H4,deck_count:75,model_hand_count:8,first_meld_done:[true,true],
+      log:["[human] plays Y5 Y6 Y7 (재배열)"]}),null,dec2),
+    wrap(base({turn:5,table:tblRe,human_hand:H4,deck_count:74,model_hand_count:9,first_meld_done:[true,true],
+      log:["[human] plays Y5 Y6 Y7 (재배열)","[model] draws"]}),null,dec2),
+    wrap(base({turn:6,table:tblWin,human_hand:[],deck_count:74,model_hand_count:9,first_meld_done:[true,true],
+      outcome:"human",model_hand:[t("R",1),t("R",2),t("Y",10),t("K",4),t("B",3),t("Y",13),t("K",9),t("B",1),t("R",4)],
+      log:["[human] plays out — 승리!"]}),null,dec2),
+  ];
+}
+function setupDemo(){
+  const SCRIPT=buildDemo();let i=0;
+  const bar=document.createElement("div");bar.id="demobar";
+  const label=document.createElement("span");label.className="step";
+  const prev=document.createElement("button");prev.className="ghost";prev.textContent="◀ 이전";
+  const next=document.createElement("button");next.textContent="다음 ▶";
+  const reset=document.createElement("button");reset.className="ghost";reset.textContent="⟲ 리셋";
+  bar.append(prev,label,next,reset);document.body.appendChild(bar);
+  const show=()=>{render(SCRIPT[i]);label.textContent=`데모 ${i+1} / ${SCRIPT.length}`;};
+  next.onclick=()=>{if(i<SCRIPT.length-1){i++;show();}};
+  prev.onclick=()=>{if(i>0){i--;show();}};
+  reset.onclick=()=>{i=0;show();};
+  show();
+}
+
+if(DEMO){window.onload=setupDemo;}
+else{window.onload=async()=>{const r=await api("/api/state");if(r&&r.state)render(r);else newGame();};}
 </script>
 </body>
 </html>

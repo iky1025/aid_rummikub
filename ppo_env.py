@@ -5,7 +5,7 @@ import numpy as np
 from gymnasium import spaces
 
 from rummikub_env import RummikubEnv
-from rummikub_solver import COLORS, flatten
+from rummikub_solver import COLORS, JOKER_VALUE, flatten
 
 
 # hand(52) + table(52) + deck_frac(1) + opp_hand_COUNT(1) + meld_ppo(1) + meld_opp(1).
@@ -47,10 +47,20 @@ class RummikubPPOEnv(gym.Env):
         initial_meld_value=0,
         exhaustive_candidates=False,
         opponent_policy=None,
+        value_scoring=False,
+        end_on_stuck=False,
     ):
         super().__init__()
         self.max_candidates = max_candidates
         self.max_turns = max_turns
+        # Track B (real rules): value_scoring -> margins are the SUM OF TILE
+        # VALUES (official scoring) instead of tile count. end_on_stuck -> the
+        # game ends when the pool is empty AND both players consecutively can't
+        # play (official pool-empty-and-stuck end), with the lower tile-value
+        # sum winning; otherwise it rides to the max_turns safety cap as before.
+        self.value_scoring = value_scoring
+        self.end_on_stuck = end_on_stuck
+        self._stuck_streak = 0
         self.ppo_player = ppo_player
         self.ilp_player = 1 - ppo_player
         self._init_seed = seed
@@ -130,6 +140,7 @@ class RummikubPPOEnv(gym.Env):
 
         self.turn_count = 0
         self.last_candidates = []
+        self._stuck_streak = 0
 
         # R7: if PPO is at position 1, the opponent (position 0) acts first.
         # Run one opponent turn before returning the observation.
@@ -141,6 +152,14 @@ class RummikubPPOEnv(gym.Env):
         info = self._build_info(self._last_candidate_count, 0)
         info["ppo_player"] = self.ppo_player
         return obs, info
+
+    def _score(self, tiles):
+        """Losing-margin for a hand: sum of tile VALUES (official) if
+        value_scoring, else tile COUNT (legacy). A joker held in hand is a
+        30-point penalty (official)."""
+        if self.value_scoring:
+            return sum(JOKER_VALUE if t.is_joker else t.number for t in tiles)
+        return len(tiles)
 
     def _meld_params(self, player_id):
         """Return (min_play_value, ignore_table) for solver calls."""
@@ -246,6 +265,7 @@ class RummikubPPOEnv(gym.Env):
             self.env.apply_solution(result, append_to_table=ppo_ignore_tbl)
             reward += 0.1 * result.used_hand_tile_count
             self.first_meld_done[self.ppo_player] = True
+            self._stuck_streak = 0  # a play breaks a stuck streak
             if len(self.env.hand) == 0:
                 ilp_remaining = len(self.hands[self.ilp_player])
                 reward += 5.0 + 0.3 * ilp_remaining
@@ -253,7 +273,7 @@ class RummikubPPOEnv(gym.Env):
                 obs = self._terminal_obs()
                 info = self._build_info(len(candidates), 0)
                 info["outcome"] = "win"
-                info["win_margin"] = ilp_remaining
+                info["win_margin"] = self._score(self.hands[self.ilp_player])
                 info["loss_margin"] = 0
                 info["ppo_player"] = self.ppo_player
                 info["pre_meld"] = ppo_was_pre_meld
@@ -262,17 +282,34 @@ class RummikubPPOEnv(gym.Env):
             drawn_tile = self.env.draw_tile()
             if drawn_tile is None:
                 reward -= 1.0
+                self._stuck_streak += 1  # pool-empty pass (can't draw, can't play)
             else:
                 reward -= 0.5
+                self._stuck_streak = 0
 
         self.hands[self.ppo_player] = list(self.env.hand)
         reward -= 0.01
 
+        if self.end_on_stuck and self._stuck_streak >= 2:
+            return self._stuck_terminal(reward, ppo_was_pre_meld, len(candidates))
+
         self.current_player = self.ilp_player
+        opp_before = len(self.hands[self.ilp_player])
         ilp_used_hand_tiles, ilp_done = self._opponent_turn()
+        opp_passed = (ilp_used_hand_tiles == 0
+                      and len(self.hands[self.ilp_player]) == opp_before)
+        if ilp_used_hand_tiles > 0:
+            self._stuck_streak = 0
+        elif opp_passed:
+            self._stuck_streak += 1
+        else:
+            self._stuck_streak = 0  # drew a real tile
 
         if ilp_used_hand_tiles > 0:
             reward -= 0.02 * ilp_used_hand_tiles
+
+        if self.end_on_stuck and not ilp_done and self._stuck_streak >= 2:
+            return self._stuck_terminal(reward, ppo_was_pre_meld, len(candidates))
 
         if ilp_done:
             ppo_remaining = len(self.hands[self.ppo_player])
@@ -281,7 +318,7 @@ class RummikubPPOEnv(gym.Env):
             info = self._build_info(len(candidates), ilp_used_hand_tiles)
             info["outcome"] = "loss"
             info["win_margin"] = 0
-            info["loss_margin"] = ppo_remaining
+            info["loss_margin"] = self._score(self.hands[self.ppo_player])
             info["ppo_player"] = self.ppo_player
             return obs, reward, True, False, info
 
@@ -297,13 +334,39 @@ class RummikubPPOEnv(gym.Env):
         info["ppo_player"] = self.ppo_player
         info["pre_meld"] = ppo_was_pre_meld
         if truncated:
-            ppo_remaining = len(self.hands[self.ppo_player])
-            ilp_remaining = len(self.hands[self.ilp_player])
-            reward += 0.3 * (ilp_remaining - ppo_remaining)
+            ppo_s = self._score(self.hands[self.ppo_player])
+            ilp_s = self._score(self.hands[self.ilp_player])
+            reward += 0.3 * (len(self.hands[self.ilp_player])
+                             - len(self.hands[self.ppo_player]))
             info["outcome"] = "timeout"
-            info["win_margin"] = max(0, ilp_remaining - ppo_remaining)
-            info["loss_margin"] = max(0, ppo_remaining - ilp_remaining)
+            info["win_margin"] = max(0, ilp_s - ppo_s)
+            info["loss_margin"] = max(0, ppo_s - ilp_s)
         return obs, reward, terminated, truncated, info
+
+    def _stuck_terminal(self, reward, ppo_was_pre_meld, cand_count):
+        """Official pool-empty-and-stuck end: neither player can move and the
+        deck is empty. The lower tile-value (or count) sum wins; a tie draws."""
+        ppo_s = self._score(self.hands[self.ppo_player])
+        ilp_s = self._score(self.hands[self.ilp_player])
+        obs = self._terminal_obs()
+        info = self._build_info(cand_count, 0)
+        info["ppo_player"] = self.ppo_player
+        info["pre_meld"] = ppo_was_pre_meld
+        if ppo_s < ilp_s:
+            info["outcome"] = "win"
+            info["win_margin"] = ilp_s - ppo_s
+            info["loss_margin"] = 0
+            reward += 5.0
+        elif ilp_s < ppo_s:
+            info["outcome"] = "loss"
+            info["win_margin"] = 0
+            info["loss_margin"] = ppo_s - ilp_s
+            reward -= 5.0
+        else:
+            info["outcome"] = "timeout"  # exact tie
+            info["win_margin"] = 0
+            info["loss_margin"] = 0
+        return obs, reward, True, False, info
 
     def _terminal_obs(self):
         """Observation for a terminated episode. The episode is over, so the

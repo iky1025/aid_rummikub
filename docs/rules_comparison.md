@@ -1,3 +1,5 @@
+ㅏ
+
 # Implemented rules vs. official Rummikub
 
 This project plays a **simplified two-player** variant of Rummikub. This document
@@ -12,31 +14,33 @@ Our implementation: `rummikub_env.py`, `ppo_env.py`, `rummikub_solver.py`.
 
 ## Side-by-side
 
-| Aspect | Official Rummikub | This project | Why we changed it |
-|---|---|---|---|
-| Tiles | **106** = 104 numbered (1–13 × 4 colors × 2) + **2 jokers** | **104**, **no jokers** | Jokers add wildcard combinatorics that blow up the action space; removing them keeps the learning signal clean. |
-| Players | 2–4 | **2 only** | Head-to-head is the cleanest setting to measure skill vs. a baseline. |
-| Deal | 14 tiles each | 14 tiles each | same |
-| Valid sets | **Run** (≥3 consecutive, same color) · **Group** (3–4 same number, different colors) | same | same |
-| Initial meld | First play must total **≥ 30 points**, from your own rack only; no table manipulation until you've melded | same (`initial_meld_value=30`, `ignore_table` until melded) | matches the official rule (our standard config) |
-| Table manipulation | Allowed **after** your initial meld (rearrange any table tiles) | Allowed after meld; the solver may fully re-partition the table | matches; the ILP/DP solver performs the rearrangement |
-| Turn: can't/won't play | Draw **1** tile from the pool; turn ends | Draw 1 tile; turn ends | matches |
-| Pool (deck) empties | Play continues; you simply **can't draw**. Game ends when the pool is empty **and no one can play** | Drawing becomes a **no-op** (`draw_tile()` returns `None`, hand unchanged); the game does **not** end on pool-empty | approximated — see §"Deck exhaustion" |
-| Going out ("Rummikub!") | Play your last tile → you win | Hand reaches 0 → immediate win/loss (`ppo_env.py:224,252`) | matches |
-| End / tiebreak when no one goes out | Pool empty & stuck → player with the **lowest sum of tile *values*** wins | **100-turn cap** → outcome `"timeout"`, margin by remaining tile **count** (`ppo_env.py:267,274–280`) | engineering safeguard + count-based signal — see §"Turn cap" and §"Scoring" |
-| Scoring | Winner gains the sum of opponents' remaining tile **values**; losers lose their own; joker = **30** penalty | Win/loss is binary (who empties first); a count-based margin is used only for reward / `pair_net` and only at timeout | simplified to a per-tile signal, not value arithmetic |
-| Per-turn time limit | Some editions: ~1–2 min sand timer **per turn** | none | not modeled |
-| First player | Chosen at setup | Optional alternation (`alternate_first_player`) for balanced training/eval | variance control, not a rule change |
+| Aspect                              | Official Rummikub                                                                                                      | This project                                                                                                                       | Why we changed it                                                                                               |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Tiles                               | **106** = 104 numbered (1–13 × 4 colors × 2) + **2 jokers**                                             | **104**, **no jokers**                                                                                                 | Jokers add wildcard combinatorics that blow up the action space; removing them keeps the learning signal clean. |
+| Players                             | 2–4                                                                                                                   | **2 only**                                                                                                                   | Head-to-head is the cleanest setting to measure skill vs. a baseline.                                           |
+| Deal                                | 14 tiles each                                                                                                          | 14 tiles each                                                                                                                      | same                                                                                                            |
+| Valid sets                          | **Run** (≥3 consecutive, same color) · **Group** (3–4 same number, different colors)                    | same                                                                                                                               | same                                                                                                            |
+| Initial meld                        | First play must total**≥ 30 points**, from your own rack only; no table manipulation until you've melded        | same (`initial_meld_value=30`, `ignore_table` until melded)                                                                    | matches the official rule (our standard config)                                                                 |
+| Table manipulation                  | Allowed**after** your initial meld (rearrange any table tiles)                                                   | Allowed after meld; the solver may fully re-partition the table                                                                    | matches; the ILP/DP solver performs the rearrangement                                                           |
+| Turn: can't/won't play              | Draw**1** tile from the pool; turn ends                                                                          | Draw 1 tile; turn ends                                                                                                             | matches                                                                                                         |
+| Pool (deck) empties                 | Play continues; you simply**can't draw**. Game ends when the pool is empty **and no one can play**         | Drawing becomes a**no-op** (`draw_tile()` returns `None`, hand unchanged); the game does **not** end on pool-empty | approximated — see §"Deck exhaustion"                                                                         |
+| Going out ("Rummikub!")             | Play your last tile → you win                                                                                         | Hand reaches 0 → immediate win/loss (`ppo_env.py:224,252`)                                                                      | matches                                                                                                         |
+| End / tiebreak when no one goes out | Pool empty & stuck → player with the**lowest sum of tile *values*** wins                                      | **100-turn cap** → outcome `"timeout"`, margin by remaining tile **count** (`ppo_env.py:267,274–280`)            | engineering safeguard + count-based signal — see §"Turn cap" and §"Scoring"                                  |
+| Scoring                             | Winner gains the sum of opponents' remaining tile**values**; losers lose their own; joker = **30** penalty | Win/loss is binary (who empties first); a count-based margin is used only for reward /`pair_net` and only at timeout             | simplified to a per-tile signal, not value arithmetic                                                           |
+| Per-turn time limit                 | Some editions: ~1–2 min sand timer**per turn**                                                                  | none                                                                                                                               | not modeled                                                                                                     |
+| First player                        | Chosen at setup                                                                                                        | Optional alternation (`alternate_first_player`) for balanced training/eval                                                       | variance control, not a rule change                                                                             |
 
 ## Notable differences, explained
 
 ### No jokers
+
 The biggest rule change. Jokers are wildcards that can stand for any tile and be
 retrieved/replaced during manipulation. They multiply the number of legal sets
 and make the one-turn optimization harder. We dropped them so the solver and the
 policy operate on a clean, fully-determined tile space.
 
 ### Deck exhaustion (`draw_tile` returns `None`)
+
 Official Rummikub ends the game when the **pool is empty and no player can make a
 move**, then compares remaining tile values. We do **not** implement that end
 condition. Instead, once the deck is empty a "draw" action does nothing (the hand
@@ -51,6 +55,7 @@ practice neither the deck-empty nor the timeout path is exercised; losses are
 "going-out races" the opponent wins first, not tile-count endings.
 
 ### Turn cap = 100 (the "timeout")
+
 This is an **RL engineering safeguard, not a Rummikub rule.** A Gymnasium episode
 must terminate; without a cap, a deck-empty position where both players are stuck
 would loop forever. `turn_count` increments once per agent turn (own move +
@@ -60,6 +65,7 @@ going out first). On truncation the episode is labeled `"timeout"` (not a clean
 win/loss), and a count-based margin is recorded.
 
 ### Scoring by tile *count*, not tile *value*
+
 Official scoring sums the **face values** of the tiles left on the losers' racks
 (and a joker is a 30-point penalty). We use a binary win/loss (who empties their
 hand first) plus, at timeout only, a margin equal to the **difference in the
@@ -111,13 +117,26 @@ Restore rules **only after 수준 3 is achieved and stable on the current rulese
 evaluation) is trusted and reproducible. At that point each added rule becomes a
 clean *"does the method generalize?"* experiment rather than a moving target.
 
+**Concrete gate (2026-07-19 update).** The DAgger/ExIt teacher-strengthening
+lever is now exhausted: three stronger teachers (oracle 63.8%, strong-blind
+diluted 61.3%, strong-blind oversampled 58.3%) all failed to beat the
+dagger1-student's **70.3%**, which theory identifies as the *denoised ceiling of
+a 1-ply blind teacher* (distillation removes the teacher's decision variance but
+cannot exceed its capped evaluation signal). The remaining lever is **search
+depth** — the "depth arc": Stage 3 (endgame networkification with exact DFS
+labels) and then ① (midgame value + deterministic search). **The rules stay
+frozen through the depth arc**, because Stage 3's gate actively uses the 70.3%
+baseline and the oracle ceilings. The trigger to start restoring rules is the
+depth arc's resolution — the point where "our best agent and its ceiling on the
+current ruleset" is settled.
+
 ### Order of incorporation — cheapest / action-space-preserving first
 
-| Rule | Cost | Nature of the change | When |
-|---|---|---|---|
-| **Value-based scoring** (sum of tile *values*, joker = 30) | Low | **Reward only** — action space and solver unchanged; `net` margin is already tracked | Can come relatively early. Changes optimal *risk* behavior (when behind, gamble on high tiles / hoard low ones) and finally penalizes high-tile hoarding, which the count-based signal does not. |
-| **Deck-exhaustion & turn rules** (end on pool-empty-and-stuck; drop the 100-turn cap for a "both stuck" terminal) | Medium | Game-engine change; end-condition and reward tail | Middle. In practice the current sims rarely reach deck-empty, so impact is small until value-scoring makes tile-count endings matter. |
-| **Jokers** | **High** | Solver **DP state must carry wildcards** + a **new strategic dimension** (hold a joker as insurance, retrieve/replace table jokers, deny the opponent a joker) + engine | **Last, as its own round (R11+).** The flagship "full Rummikub" extension. |
+| Rule                                                                                                                    | Cost           | Nature of the change                                                                                                                                                               | When                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Value-based scoring** (sum of tile *values*, joker = 30)                                                      | Low            | **Reward only** — action space and solver unchanged; `net` margin is already tracked                                                                                      | Can come relatively early. Changes optimal*risk* behavior (when behind, gamble on high tiles / hoard low ones) and finally penalizes high-tile hoarding, which the count-based signal does not. |
+| **Deck-exhaustion & turn rules** (end on pool-empty-and-stuck; drop the 100-turn cap for a "both stuck" terminal) | Medium         | Game-engine change; end-condition and reward tail                                                                                                                                  | Middle. In practice the current sims rarely reach deck-empty, so impact is small until value-scoring makes tile-count endings matter.                                                             |
+| **Jokers**                                                                                                        | **High** | Solver**DP state must carry wildcards** + a **new strategic dimension** (hold a joker as insurance, retrieve/replace table jokers, deny the opponent a joker) + engine | **Last, as its own round (R11+).** The flagship "full Rummikub" extension.                                                                                                                  |
 
 Each addition **re-opens the baseline ledger** — re-measure greedy-sanity and the
 oracle ceilings on the new ruleset *before* comparing anything. Budget for that
@@ -149,7 +168,19 @@ the opponent's hand.** So:
 
 ### Summary
 
-Freeze now. After 수준 3 is proven on the current rules: **value-scoring first
-(reward-only, low cost) → deck/turn rules → jokers last (own round).** Re-measure
-baselines at every step. Keep jokers in mind as the point where the shelved
-hand-prediction research may come back to life.
+Freeze through the depth arc (Stage 3 → ①). Once the depth arc settles the
+current ruleset's ceiling: **value-scoring first (reward-only, low cost) →
+deck/turn rules → jokers (own round).** Re-measure baselines at every step.
+
+**The saturation finding elevates jokers.** Because teacher-strengthening is
+tapped out and the current variant shows luck-saturation signals (random is a
+strong baseline, greedy near-optimal), the jokerless variant's remaining headroom
+may be small. The depth arc's outcome is the concrete decision gate:
+
+- **depth breaks the ceiling well (e.g. ~80%+):** the current ruleset still has
+  headroom; restore rules later, slowly, in order.
+- **depth also plateaus (e.g. stalls ~74%):** the jokerless variant is confirmed
+  near its skill ceiling → **jokers become the clear next frontier**, promoted
+  from "last, someday" to the natural next major round (R11+), because they
+  de-saturate the game (revive blocking/holding and the shelved hand-prediction
+  channel) and are the one place with meaningful skill left to extract.

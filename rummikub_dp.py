@@ -94,7 +94,13 @@ class RummikubDP:
         # copies via list(s) / Counter(s) / flatten (audited) — so sharing the
         # object is safe. Verified byte-identical via solver_regression.py.
         self._cache = {}
-        self._cache_cap = 1_000_000
+        # Cap bounds memory: cleared wholesale on overflow. Behaviour-neutral —
+        # only affects when a cache miss recurs, never a return value. 200k keeps
+        # the hot within-decision working set (where nearly all of the 54%
+        # redundancy lives, used within seconds), so the 2.3x speedup is
+        # preserved; the long cross-game tail is dropped. 1M let 4 workers grow
+        # to ~8GB collectively and OOM before any single cache hit its cap.
+        self._cache_cap = 200_000
 
     def solve(self, hand_counter, table_counter, min_play_value=0):
         """Maximize hand tiles used; all table tiles must be used.
