@@ -191,6 +191,9 @@ def play_game(policy, seed, ppo_player, args):
         opponent=args.opponent,
         initial_meld_value=args.initial_meld_value,
         exhaustive_candidates=args.exhaustive,
+        with_jokers=getattr(args, "with_jokers", False),
+        value_scoring=getattr(args, "value_scoring", False),
+        end_on_stuck=getattr(args, "end_on_stuck", False),
     )
     obs, _ = env.reset(seed=seed)
     done = False
@@ -273,6 +276,12 @@ def main():
                              "candidate wins by more than this per-rollout margin")
     parser.add_argument("--workers", type=int, default=1,
                         help="parallel worker processes (pairs are independent)")
+    parser.add_argument("--with-jokers", action="store_true",
+                        help="R11: 106-tile deck with 2 jokers (wildcards)")
+    parser.add_argument("--value-scoring", action="store_true",
+                        help="official value-sum scoring (joker=30) not tile count")
+    parser.add_argument("--end-on-stuck", action="store_true",
+                        help="official pool-empty-and-stuck end")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 

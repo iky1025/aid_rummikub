@@ -139,6 +139,7 @@ def play_game(teacher, seed, seat, args, actor=None):
         ppo_player=seat,
         opponent="ilp",
         initial_meld_value=args.initial_meld_value,
+        with_jokers=getattr(args, "with_jokers", False),
     )
     obs, _ = env.reset(seed=seed)
     records = []
@@ -259,6 +260,8 @@ def main():
     parser.add_argument("--recycle-after", type=int, default=25,
                         help="restart each worker process after this many "
                              "pairs (bounds slow memory growth)")
+    parser.add_argument("--with-jokers", action="store_true",
+                        help="R11: 106-tile deck with 2 jokers (wildcards)")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
