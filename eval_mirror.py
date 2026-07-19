@@ -80,7 +80,8 @@ def make_policy(args):
         import torch
         from ppo_model import DistillStudent
 
-        obs_dim = obs_dim_from_env()
+        wj = getattr(args, "with_jokers", False)
+        obs_dim = obs_dim_from_env(wj)
         if args.student_history:
             from distill import EVENT_FEAT_DIM, event_feats
             from selfplay_data import _event_history
@@ -88,7 +89,7 @@ def make_policy(args):
 
         model = DistillStudent(
             obs_dim=obs_dim,
-            cand_feat_dim=52 + 52,
+            cand_feat_dim=cand_dim_from_env(wj),
             max_candidates=max_candidates,
         )
         state_dict = torch.load(args.model, map_location="cpu",
@@ -177,9 +178,14 @@ def make_policy(args):
     raise ValueError(f"unknown policy: {args.policy}")
 
 
-def obs_dim_from_env():
-    from ppo_env import STATE_DIM
-    return STATE_DIM
+def obs_dim_from_env(with_jokers=False):
+    from ppo_env import state_dim_for
+    return state_dim_for(with_jokers)
+
+
+def cand_dim_from_env(with_jokers=False):
+    from ppo_env import cand_feat_dim_for
+    return cand_feat_dim_for(with_jokers)
 
 
 def play_game(policy, seed, ppo_player, args):

@@ -236,7 +236,10 @@ def main():
                       data["cand_votes"] * SCORE_SCALE,
                       data["cand_scores"]).astype(np.float32)
     data["scores_merged"] = merged
-    obs_dim = STATE_DIM
+    # Infer dims from the data so jokered shards (state 110 / cand 106) and
+    # jokerless (108 / 104) both work without a flag.
+    obs_dim = data["state"].shape[1]
+    cand_feat_dim = data["cand_feats"].shape[2]
     if args.history:
         data["state_ext"] = np.concatenate(
             [data["state"], event_feats(data["events"])], axis=1)
@@ -249,7 +252,7 @@ def main():
 
     model = DistillStudent(
         obs_dim=obs_dim,
-        cand_feat_dim=CAND_FEAT_DIM,
+        cand_feat_dim=cand_feat_dim,
         max_candidates=args.max_candidates,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
