@@ -8,11 +8,26 @@ from rummikub_env import RummikubEnv
 from rummikub_solver import COLORS, JOKER_VALUE, flatten
 
 
-# hand(52) + table(52) + deck_frac(1) + opp_hand_COUNT(1) + meld_ppo(1) + meld_opp(1).
+# Per-tile one-hot dim: 52 (4 colors x 13) jokerless; +1 joker slot (index 52)
+# under with_jokers (R11). hand + table + deck_frac + opp_hand_COUNT + 2 meld.
 # The opponent slot is their hand *size* (len/14), never their tiles — the
 # hidden hand is only ever an aux label / oracle-teacher input, never an obs.
-STATE_DIM = 52 + 52 + 1 + 1 + 1 + 1
-CAND_FEAT_DIM = 52 + 52
+TILE_DIM = 52
+TILE_DIM_JOKER = 53
+
+
+def state_dim_for(with_jokers=False):
+    td = TILE_DIM_JOKER if with_jokers else TILE_DIM
+    return 2 * td + 4
+
+
+def cand_feat_dim_for(with_jokers=False):
+    td = TILE_DIM_JOKER if with_jokers else TILE_DIM
+    return 2 * td
+
+
+STATE_DIM = state_dim_for(False)       # 108 (jokerless default)
+CAND_FEAT_DIM = cand_feat_dim_for(False)  # 104
 
 
 class RummikubPPOEnv(gym.Env):
@@ -49,8 +64,13 @@ class RummikubPPOEnv(gym.Env):
         opponent_policy=None,
         value_scoring=False,
         end_on_stuck=False,
+        with_jokers=False,
     ):
         super().__init__()
+        self.with_jokers = with_jokers
+        self.tile_dim = TILE_DIM_JOKER if with_jokers else TILE_DIM
+        self.state_dim = state_dim_for(with_jokers)
+        self.cand_feat_dim = cand_feat_dim_for(with_jokers)
         self.max_candidates = max_candidates
         self.max_turns = max_turns
         # Track B (real rules): value_scoring -> margins are the SUM OF TILE
@@ -85,15 +105,16 @@ class RummikubPPOEnv(gym.Env):
         self.env = RummikubEnv(
             seed=seed,
             hand_size=14,
+            with_jokers=with_jokers,
         )
 
         self.observation_space = spaces.Dict({
             "state": spaces.Box(
-                low=0.0, high=10.0, shape=(STATE_DIM,), dtype=np.float32,
+                low=0.0, high=10.0, shape=(self.state_dim,), dtype=np.float32,
             ),
             "cand_feats": spaces.Box(
                 low=0.0, high=10.0,
-                shape=(self.max_candidates, CAND_FEAT_DIM), dtype=np.float32,
+                shape=(self.max_candidates, self.cand_feat_dim), dtype=np.float32,
             ),
             "mask": spaces.Box(
                 low=0.0, high=1.0,
@@ -112,7 +133,8 @@ class RummikubPPOEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if seed is not None:
-            self.env = RummikubEnv(seed=seed, hand_size=14)
+            self.env = RummikubEnv(seed=seed, hand_size=14,
+                                   with_jokers=self.with_jokers)
             self.opponent_random = random.Random(seed)
 
         # R7: alternate ppo_player per reset
@@ -374,7 +396,7 @@ class RummikubPPOEnv(gym.Env):
         self.last_candidates = []
         self._last_candidate_count = 0
         state = self._state_vector()
-        cand_feats = np.zeros((self.max_candidates, CAND_FEAT_DIM), dtype=np.float32)
+        cand_feats = np.zeros((self.max_candidates, self.cand_feat_dim), dtype=np.float32)
         mask = np.zeros(self.max_candidates + 1, dtype=np.float32)
         mask[self.max_candidates] = 1.0
         return {"state": state, "cand_feats": cand_feats, "mask": mask}
@@ -418,7 +440,7 @@ class RummikubPPOEnv(gym.Env):
 
         state = self._state_vector()
 
-        cand_feats = np.zeros((self.max_candidates, CAND_FEAT_DIM), dtype=np.float32)
+        cand_feats = np.zeros((self.max_candidates, self.cand_feat_dim), dtype=np.float32)
         mask = np.zeros(self.max_candidates + 1, dtype=np.float32)
 
         for i, result in enumerate(self.last_candidates):
@@ -447,10 +469,11 @@ class RummikubPPOEnv(gym.Env):
         }
 
     def tiles_to_vector(self, tiles):
-        vector = np.zeros(52, dtype=np.float32)
+        vector = np.zeros(self.tile_dim, dtype=np.float32)
         for tile in tiles:
-            color_index = COLORS.index(tile.color)
-            number_index = tile.number - 1
-            index = color_index * 13 + number_index
-            vector[index] += 1.0
+            if tile.is_joker:
+                vector[52] += 1.0  # joker slot (only present when tile_dim==53)
+            else:
+                index = COLORS.index(tile.color) * 13 + (tile.number - 1)
+                vector[index] += 1.0
         return vector / 2.0

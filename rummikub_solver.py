@@ -193,8 +193,34 @@ def make_candidate_info(candidate_set, available_counter, need=None):
     )
 
 
+def _joker_variants(base_set, available_counter, n_jokers):
+    """R11: candidate sets formed from `base_set` by replacing 1..n_jokers of its
+    positions with jokers (the rest must be available real tiles). Every base
+    valid set stays valid under any position->joker replacement, so each variant
+    is a legal set. Full model (a joker may replace an AVAILABLE tile too, to
+    free it for another set), which keeps the ILP optimum exact.
+
+    Yields CandidateSet with real_used counting jokers under the JOKER key."""
+    tiles = list(base_set)
+    L = len(tiles)
+    out = []
+    for k in range(1, min(n_jokers, L) + 1):
+        for real_pos in combinations(range(L), L - k):
+            real_tiles = [tiles[i] for i in real_pos]
+            rc = Counter(real_tiles)
+            if any(available_counter[t] < c for t, c in rc.items()):
+                continue
+            real_pos_set = set(real_pos)
+            completed = [tiles[i] if i in real_pos_set else JOKER
+                         for i in range(L)]
+            rc[JOKER] = k
+            out.append(CandidateSet(completed_tiles=completed, real_used=rc))
+    return out
+
+
 def filter_available_sets(available_tiles):
     available_counter = Counter(available_tiles)
+    n_jokers = available_counter.get(JOKER, 0)
     candidates = []
 
     for candidate_set, need in _SETS_WITH_NEEDS:
@@ -208,6 +234,10 @@ def filter_available_sets(available_tiles):
             candidates.append(
                 make_candidate_info(candidate_set, available_counter, need)
             )
+        # R11: joker-completed variants of this base set (needs a joker).
+        if n_jokers:
+            candidates.extend(
+                _joker_variants(candidate_set, available_counter, n_jokers))
 
     return candidates
 
@@ -389,9 +419,15 @@ class RummikubILPSolver:
         if excluded_solutions is None:
             excluded_solutions = []
 
+        # R11: the DP does not model jokers yet (Phase 2b) — route any position
+        # containing a joker (hand or table) through the ILP, which does.
+        has_joker = any(t.is_joker for t in hand_tiles) or any(
+            t.is_joker for s in table_sets for t in s)
+
         # Hot path: plain max-play queries go through the DP.
         if (
             self.dp is not None
+            and not has_joker
             and not excluded_solutions
             and max_hand_tiles_used is None
             and exact_hand_tiles_used is None
@@ -430,7 +466,9 @@ class RummikubILPSolver:
         # tile" is infeasible — skip candidate building and the ILP entirely.
         # (Necessary condition only: the converse can still be infeasible.)
         # Raw scan over the static set list: no allocations on the hot path.
-        if require_use_at_least_one_hand_tile:
+        # R11: the scan uses jokerless base sets, so it can't see joker-completed
+        # plays — skip it when a joker is available and let the ILP decide.
+        if require_use_at_least_one_hand_tile and not has_joker:
             hand_counter = Counter(hand_tiles)
             playable = False
             for _, need in _SETS_WITH_NEEDS:
