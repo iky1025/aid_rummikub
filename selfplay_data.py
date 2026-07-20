@@ -87,14 +87,16 @@ def make_student_actor(args):
     and optional history features."""
     import torch
     from distill import EVENT_FEAT_DIM, event_feats
-    from ppo_env import CAND_FEAT_DIM, STATE_DIM
+    from ppo_env import state_dim_for, cand_feat_dim_for
     from ppo_model import DistillStudent
 
-    obs_dim = STATE_DIM + (EVENT_FEAT_DIM if args.actor_history else 0)
+    wj = getattr(args, "with_jokers", False)
+    obs_dim = state_dim_for(wj) + (EVENT_FEAT_DIM if args.actor_history else 0)
     model = DistillStudent(
         obs_dim=obs_dim,
-        cand_feat_dim=CAND_FEAT_DIM,
+        cand_feat_dim=cand_feat_dim_for(wj),
         max_candidates=args.max_candidates,
+        opp_hand_dim=cand_feat_dim_for(wj) // 2,   # tile_dim (53 jokered)
     )
     model.load_state_dict(
         torch.load(args.actor_model, map_location="cpu", weights_only=True))

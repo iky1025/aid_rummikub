@@ -91,12 +91,15 @@ class DistillStudent(ActorCritic):
     used at training time.
     """
 
-    def __init__(self, obs_dim, cand_feat_dim, max_candidates):
+    def __init__(self, obs_dim, cand_feat_dim, max_candidates, opp_hand_dim=52):
         super().__init__(obs_dim, cand_feat_dim, max_candidates)
+        # opp_hand_dim = tile-type count of the aux label: 52 jokerless, 53
+        # jokered (the joker slot — predicting the opponent's joker is exactly
+        # the R11 hand-knowledge signal).
         self.opp_hand_head = nn.Sequential(
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(128, 52),
+            nn.Linear(128, opp_hand_dim),
         )
 
     def forward_aux(self, obs):

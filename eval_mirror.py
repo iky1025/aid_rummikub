@@ -91,6 +91,7 @@ def make_policy(args):
             obs_dim=obs_dim,
             cand_feat_dim=cand_dim_from_env(wj),
             max_candidates=max_candidates,
+            opp_hand_dim=cand_dim_from_env(wj) // 2,   # tile_dim (53 jokered)
         )
         state_dict = torch.load(args.model, map_location="cpu",
                                 weights_only=True)

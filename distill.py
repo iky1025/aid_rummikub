@@ -351,6 +351,7 @@ def main():
         obs_dim=obs_dim,
         cand_feat_dim=cand_feat_dim,
         max_candidates=args.max_candidates,
+        opp_hand_dim=data["opp_hand"].shape[1],
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
