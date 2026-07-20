@@ -419,15 +419,17 @@ class RummikubILPSolver:
         if excluded_solutions is None:
             excluded_solutions = []
 
-        # R11: the DP does not model jokers yet (Phase 2b) — route any position
-        # containing a joker (hand or table) through the ILP, which does.
+        # R11: the DP models jokers for MAX-PLAY only (Phase 2b). The meld case
+        # (min_play_value > 0) with a joker still routes to the ILP, since the
+        # DP's joker path does not track the represented-value of a joker.
         has_joker = any(t.is_joker for t in hand_tiles) or any(
             t.is_joker for s in table_sets for t in s)
+        dp_handles_jokers = not has_joker or min_play_value == 0
 
         # Hot path: plain max-play queries go through the DP.
         if (
             self.dp is not None
-            and not has_joker
+            and dp_handles_jokers
             and not excluded_solutions
             and max_hand_tiles_used is None
             and exact_hand_tiles_used is None

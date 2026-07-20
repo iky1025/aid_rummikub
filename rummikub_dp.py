@@ -15,9 +15,9 @@ Traceback reconstructs a concrete arrangement (list of valid sets).
 """
 
 from collections import Counter
-from itertools import combinations
+from itertools import combinations, combinations_with_replacement, product
 
-from rummikub_solver import COLORS, Tile
+from rummikub_solver import COLORS, JOKER, Tile
 
 
 def _build_group_partitions():
@@ -46,6 +46,46 @@ def _build_group_partitions():
 GROUP_PARTS = _build_group_partitions()
 
 
+def _build_group_parts_j():
+    """R11 jokers. (g0,g1,g2,g3,jg) -> a partition of the number-n group tiles
+    into valid groups, using exactly the real per-color counts g (each 0..2) and
+    exactly jg jokers (0..2), as a list of (frozenset real color indices,
+    n_jokers), or None if impossible.
+
+    A group is 3-4 tiles of distinct real colors + jokers (a joker stands for a
+    missing color), size 3-4. The jg=0 slice is identical to GROUP_PARTS
+    (verified: 0 mismatches, scratchpad/group_joker.py brute-force cross-check)."""
+    shapes = []                                  # (frozenset real colors, jokers)
+    for r in range(0, 5):
+        for cols in combinations(range(4), r):
+            for j in range(0, 4 - r + 1):
+                if 3 <= r + j <= 4:
+                    shapes.append((frozenset(cols), j))
+    table = {}
+    for g in product(range(3), repeat=4):
+        for jg in range(3):
+            found = None
+            for k in range(0, 5):
+                if found is not None:
+                    break
+                for combo in combinations_with_replacement(range(len(shapes)), k):
+                    use = [0, 0, 0, 0]
+                    jok = 0
+                    for idx in combo:
+                        cols, j = shapes[idx]
+                        for c in cols:
+                            use[c] += 1
+                        jok += j
+                    if tuple(use) == g and jok == jg:
+                        found = [shapes[idx] for idx in combo]
+                        break
+            table[(*g, jg)] = found
+    return table
+
+
+GROUP_PARTS_J = _build_group_parts_j()
+
+
 def _build_run_transitions():
     """(pair, x) -> list of (new_pair, extended_capped_lengths, n_new).
 
@@ -57,7 +97,13 @@ def _build_run_transitions():
     pairs = [(a, b) for a in range(4) for b in range(a, 4)]
     for pair in pairs:
         runs = [l for l in pair if l > 0]
-        for x in range(3):
+        # x up to 4 (2 real + 2 joker copies of one tile). x >= 3 always yields
+        # an empty transition list (>2 open runs per color is pruned below), so
+        # this only ADDS empty entries — the x in {0,1,2} keys stay identical, so
+        # the verified jokerless path is unchanged — while avoiding a KeyError
+        # when a joker pushes run-tiles past 2 (and fixing a latent jokerless
+        # crash on 3+ copies of a tile).
+        for x in range(5):
             outs = {}
             for k in range(min(x, len(runs)) + 1):
                 for ext in combinations(range(len(runs)), k):
@@ -123,6 +169,15 @@ class RummikubDP:
         return result
 
     def _solve_uncached(self, hand_counter, table_counter, min_play_value=0):
+        jt = table_counter.get(JOKER, 0)
+        jh = hand_counter.get(JOKER, 0)
+        if jt + jh == 0:
+            return self._solve_jokerless(
+                hand_counter, table_counter, min_play_value)
+        return self._solve_joker(
+            hand_counter, table_counter, min_play_value, jt, jh)
+
+    def _solve_jokerless(self, hand_counter, table_counter, min_play_value=0):
         avail = {}
         mand = {}
         for c in range(4):
@@ -212,6 +267,153 @@ class RummikubDP:
 
         sets = self._traceback(best[0], best[1], parents)
         return best[2], sets
+
+    def _solve_joker(self, hand_counter, table_counter, min_play_value, jt, jh):
+        """R11 max-play with jokers (min_play_value must be 0 — the meld case
+        stays on the ILP, routed in rummikub_solver.solve). J = jt+jh jokers are
+        wildcards: a run-joker acts as (color, n) for one color's run; a
+        group-joker fills a missing color in a group (GROUP_PARTS_J). The state
+        carries `j` = jokers placed so far; table jokers (jt) are mandatory, so a
+        final state needs j >= jt, and the played-hand count is
+        real_hand_tiles + (j - jt) hand jokers."""
+        assert min_play_value == 0, "joker DP handles max-play only"
+        J = jt + jh
+        avail = {}
+        mand = {}
+        for c in range(4):
+            for n in range(1, 14):
+                tile = Tile(COLORS[c], n)
+                t = table_counter.get(tile, 0)
+                h = hand_counter.get(tile, 0)
+                mand[(c, n)] = t
+                avail[(c, n)] = t + h
+
+        start_state = (EMPTY_PAIR,) * 4 + (0,)
+        layer = {start_state: {0: None}}         # state -> {tiles_real: parent}
+        parents = []
+
+        for n in range(1, 14):
+            new_layer = {}
+            layer_parents = {}
+            for state, keymap in layer.items():
+                j = state[4]
+                budget = J - j
+                per_color = []
+                dead = False
+                for c in range(4):
+                    a = avail[(c, n)]
+                    tb = mand[(c, n)]
+                    opts = []
+                    for u in range(tb, a + 1):
+                        for x_real in range(0, u + 1):
+                            g = u - x_real
+                            if g > 2:
+                                continue
+                            for rj in range(0, budget + 1):
+                                trans = RUN_TRANS.get((state[c], x_real + rj))
+                                if not trans:
+                                    continue
+                                for (npair, extl, n_new) in trans:
+                                    opts.append((npair, g, u - tb, rj,
+                                                 (x_real, rj, extl, n_new)))
+                    if not opts:
+                        dead = True
+                        break
+                    per_color.append(opts)
+                if dead:
+                    continue
+
+                for o0 in per_color[0]:
+                    for o1 in per_color[1]:
+                        for o2 in per_color[2]:
+                            for o3 in per_color[3]:
+                                gvec = (o0[1], o1[1], o2[1], o3[1])
+                                run_jok = o0[3] + o1[3] + o2[3] + o3[3]
+                                if j + run_jok > J:
+                                    continue
+                                nstate_runs = (o0[0], o1[0], o2[0], o3[0])
+                                gain = o0[2] + o1[2] + o2[2] + o3[2]
+                                decisions = (o0[4], o1[4], o2[4], o3[4])
+                                for jg in range(0, J - j - run_jok + 1):
+                                    if any(gvec) or jg:
+                                        witness = GROUP_PARTS_J.get((*gvec, jg))
+                                        if witness is None:
+                                            continue
+                                    else:
+                                        witness = []
+                                    nj = j + run_jok + jg
+                                    nstate = nstate_runs + (nj,)
+                                    tgt = new_layer.setdefault(nstate, {})
+                                    for tiles in keymap:
+                                        nt = tiles + gain
+                                        if nt not in tgt:
+                                            tgt[nt] = True
+                                            layer_parents[(nstate, nt)] = (
+                                                state, tiles, decisions,
+                                                gvec, jg, witness,
+                                            )
+            parents.append(layer_parents)
+            layer = new_layer
+            if not layer:
+                return None
+
+        best = None
+        for state, keymap in layer.items():
+            if any(l not in SAFE for pair in state[:4] for l in pair):
+                continue
+            j = state[4]
+            if j < jt:                           # all table jokers must be placed
+                continue
+            for tiles in keymap:
+                total = tiles + (j - jt)         # real hand tiles + hand jokers
+                if best is None or total > best[1]:
+                    best = (state, total, tiles)
+        if best is None:
+            return None
+
+        sets = self._traceback_joker(best[0], best[2], parents)
+        return best[1], sets
+
+    def _traceback_joker(self, state, key, parents):
+        chain = [None] * 13
+        s, k = state, key
+        for n in range(13, 0, -1):
+            rec = parents[n - 1][(s, k)]
+            prev_state, prev_key, decisions, gvec, jg, witness = rec
+            chain[n - 1] = (decisions, gvec, jg, witness)
+            s, k = prev_state, prev_key
+
+        # runs are lists of concrete tiles (Tile or JOKER), in number order
+        sets = []
+        open_runs = [[] for _ in range(4)]
+        for n in range(1, 14):
+            decisions, gvec, jg, witness = chain[n - 1]
+            for c in range(4):
+                x_real, rj, extl, n_new = decisions[c]
+                remaining = list(open_runs[c])
+                kept = []
+                # tiles placed at (c, n) into runs: x_real reals + rj jokers
+                slot_tiles = [Tile(COLORS[c], n)] * x_real + [JOKER] * rj
+                si = 0
+                for capped in extl:
+                    for i, run in enumerate(remaining):
+                        if min(len(run), 3) == capped:
+                            run.append(slot_tiles[si]); si += 1
+                            kept.append(run)
+                            del remaining[i]
+                            break
+                for run in remaining:            # runs not extended -> close
+                    sets.append(run)
+                for _ in range(n_new):
+                    kept.append([slot_tiles[si]]); si += 1
+                open_runs[c] = kept
+            for cols, njok in witness:
+                sets.append([Tile(COLORS[c], n) for c in sorted(cols)]
+                            + [JOKER] * njok)
+        for c in range(4):
+            for run in open_runs[c]:
+                sets.append(run)
+        return sets
 
     def feasible(self, mandatory_counter):
         """Can this exact multiset be fully partitioned into valid sets?
