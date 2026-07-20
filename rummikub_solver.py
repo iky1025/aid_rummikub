@@ -696,6 +696,74 @@ class RummikubILPSolver:
 
         return results
 
+    def generate_candidates(self, hand_tiles, table_sets=None, max_candidates=20,
+                            min_play_value=0, ignore_table=False):
+        """R11: candidate moves via the generating DP (dp.generate_moves) — the
+        complete, fast distinct-move enumerator. Returns ILPResults, max-play
+        first. Selection: one move per distinct tile-count (the "how many to
+        play" axis) first, then fill by (most tiles, canonical order). Every
+        candidate is distinct by remaining hand — no arrangement duplicates — so
+        the label-convention/dedup issues of solve_many don't arise. Each
+        move's arrangement is reconstructed via dp.feasible. Jokered supports
+        min_play_value == 0 only (meld+joker not modelled)."""
+        if table_sets is None:
+            table_sets = []
+        has_joker = any(t.is_joker for t in hand_tiles) or any(
+            t.is_joker for s in table_sets for t in s)
+        # The generating DP models jokers for max-play only; the jokered meld
+        # (min_play_value > 0) falls back to the ILP, as the joker DP does.
+        if self.dp is None or (has_joker and min_play_value > 0):
+            return self.solve_many(hand_tiles, table_sets, max_candidates,
+                                   True, min_play_value, ignore_table)
+        table_tiles = [] if ignore_table else flatten(table_sets)
+        table_counter = Counter(table_tiles)
+        hand_counter = Counter(hand_tiles)
+        moves = self.dp.generate_moves(
+            hand_counter, table_counter, min_play_value)
+        if not moves:
+            return []
+
+        annotated = sorted(
+            ((sum(m.values()),
+              tuple(sorted((str(t), c) for t, c in m.items())), m)
+             for m in moves),
+            key=lambda a: (-a[0], a[1]))
+        selected, used, seen_counts = [], set(), set()
+        for cnt, k, m in annotated:          # count axis first (max-play -> low)
+            if len(selected) >= max_candidates:
+                break
+            if cnt not in seen_counts:
+                seen_counts.add(cnt)
+                selected.append(m)
+                used.add(k)
+        for cnt, k, m in annotated:          # then fill with selection variety
+            if len(selected) >= max_candidates:
+                break
+            if k not in used:
+                selected.append(m)
+                used.add(k)
+
+        results = []
+        for m in selected:
+            arrangement = self.dp.feasible(table_counter + m)
+            remaining = list((hand_counter - m).elements())
+            u = sum(m.values())
+            results.append(ILPResult(
+                status="Optimal",
+                selected_sets=[
+                    CandidateSet(completed_tiles=list(s), real_used=Counter(s))
+                    for s in arrangement
+                ],
+                selected_indices=[],
+                candidates=[],
+                objective_value=float(u),
+                table_tile_count=len(table_tiles),
+                selected_tile_count=sum(len(s) for s in arrangement),
+                used_hand_tile_count=u,
+                remaining_hand=remaining,
+            ))
+        return results
+
     def enumerate_moves(
         self,
         hand_tiles,

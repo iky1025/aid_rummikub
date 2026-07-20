@@ -61,6 +61,7 @@ class RummikubPPOEnv(gym.Env):
         alternate_first_player=False,
         initial_meld_value=0,
         exhaustive_candidates=False,
+        generating_candidates=False,
         opponent_policy=None,
         value_scoring=False,
         end_on_stuck=False,
@@ -96,6 +97,9 @@ class RummikubPPOEnv(gym.Env):
         self.initial_meld_value = initial_meld_value
         # R9: exhaustive move enumeration for the PPO player's candidates.
         self.exhaustive_candidates = exhaustive_candidates
+        # R11: generating-DP candidate list (complete + fast, no arrangement
+        # duplicates). Takes precedence over exhaustive_candidates when set.
+        self.generating_candidates = generating_candidates
         self.first_meld_done = [False, False]
         # separate RNG so opponent randomness doesn't perturb env shuffles
         self.opponent_random = random.Random(
@@ -421,7 +425,9 @@ class RummikubPPOEnv(gym.Env):
         ).astype(np.float32)
 
     def _generate_candidates(self, min_val, ignore_tbl):
-        if self.exhaustive_candidates:
+        if self.generating_candidates:
+            gen = self.env.generate_candidate_moves
+        elif self.exhaustive_candidates:
             gen = self.env.enumerate_candidate_moves
         else:
             gen = self.env.solve_candidate_moves

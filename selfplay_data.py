@@ -140,6 +140,7 @@ def play_game(teacher, seed, seat, args, actor=None):
         opponent="ilp",
         initial_meld_value=args.initial_meld_value,
         with_jokers=getattr(args, "with_jokers", False),
+        generating_candidates=getattr(args, "generating_candidates", False),
     )
     obs, _ = env.reset(seed=seed)
     records = []
@@ -262,6 +263,9 @@ def main():
                              "pairs (bounds slow memory growth)")
     parser.add_argument("--with-jokers", action="store_true",
                         help="R11: 106-tile deck with 2 jokers (wildcards)")
+    parser.add_argument("--generating-candidates", action="store_true",
+                        help="R11: generating-DP candidate list (complete + "
+                             "fast, no arrangement dups)")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)

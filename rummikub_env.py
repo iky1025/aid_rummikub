@@ -140,6 +140,18 @@ class RummikubEnv:
             )
         return moves[:max_candidates]
 
+    def generate_candidate_moves(self, max_candidates=20, min_play_value=0,
+                                 ignore_table=False):
+        """R11: candidate moves via the generating DP (complete + fast, no
+        arrangement duplicates)."""
+        return self.solver.generate_candidates(
+            hand_tiles=self.hand,
+            table_sets=self.table_sets,
+            max_candidates=max_candidates,
+            min_play_value=min_play_value,
+            ignore_table=ignore_table,
+        )
+
     def apply_solution(self, result, append_to_table=False):
         """Apply ILP result.
 

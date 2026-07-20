@@ -197,6 +197,7 @@ def play_game(policy, seed, ppo_player, args):
         opponent=args.opponent,
         initial_meld_value=args.initial_meld_value,
         exhaustive_candidates=args.exhaustive,
+        generating_candidates=getattr(args, "generating_candidates", False),
         with_jokers=getattr(args, "with_jokers", False),
         value_scoring=getattr(args, "value_scoring", False),
         end_on_stuck=getattr(args, "end_on_stuck", False),
@@ -258,6 +259,9 @@ def main():
                         help="rollout: bounded win-forcing DFS per "
                              "determinization near the endgame (R9-3)")
     parser.add_argument("--search-nodes", type=int, default=200)
+    parser.add_argument("--generating-candidates", action="store_true",
+                        help="R11: generating-DP candidate list (complete + "
+                             "fast, no arrangement dups). Overrides --exhaustive.")
     parser.add_argument("--exhaustive", action="store_true",
                         help="use exhaustive move enumeration for the agent's "
                              "candidates (R9)")
