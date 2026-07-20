@@ -201,6 +201,200 @@ class RummikubDP:
         layer, parents, J = swept
         return self._all_k_joker(layer, parents, jt)
 
+    def generate_moves(self, hand_counter, table_counter, min_play_value=0):
+        """R11 generating DP: enumerate ALL distinct playable moves in one
+        memoized sweep — no ILP exclusions, no 2^n sub-multiset iteration.
+
+        A move is a played hand sub-multiset S (Counter of Tiles; JOKER entries
+        are hand jokers played) such that table + S partitions into valid sets
+        (all table tiles used). Returns the list of such Counters, most tiles
+        first. Memoizes, per (number, run-state[, jokers-placed]), the SET of
+        distinct played-suffix multisets that complete validly; the distinct-
+        move count is small so those sets stay small and are shared across
+        arrangements. Complete (matches enumerate_moves with 0 mismatch) and
+        fast even with jokers, where sub-multiset enumeration blows up.
+
+        Jokered supports min_play_value == 0 only (joker meld value is not
+        modelled, same limitation as the joker DP)."""
+        jt = table_counter.get(JOKER, 0)
+        jh = hand_counter.get(JOKER, 0)
+        if jt + jh == 0:
+            raw = self._gen_jokerless(hand_counter, table_counter, min_play_value)
+            moves = [Counter({Tile(COLORS[c], n): p for (c, n), p in S})
+                     for S in raw]
+        else:
+            assert min_play_value == 0, "joker generate_moves is max-play only"
+            moves = []
+            for rp, hand_jokers in self._gen_joker(
+                    hand_counter, table_counter, jt, jh):
+                m = Counter({Tile(COLORS[c], n): p for (c, n), p in rp})
+                if hand_jokers:
+                    m[JOKER] = hand_jokers
+                moves.append(m)
+        moves.sort(key=lambda m: -sum(m.values()))
+        return moves
+
+    def _gen_jokerless(self, hand_counter, table_counter, min_play_value):
+        avail = {}
+        mand = {}
+        for c in range(4):
+            for n in range(1, 14):
+                tile = Tile(COLORS[c], n)
+                t = table_counter.get(tile, 0)
+                avail[(c, n)] = t + hand_counter.get(tile, 0)
+                mand[(c, n)] = t
+        memo = {}
+
+        def suffixes(n, state):
+            # set of frozenset(((c,n),p)) played-suffixes (numbers >= n) that
+            # complete to an all-valid table.
+            if n == 14:
+                if all(l in SAFE for pair in state for l in pair):
+                    return frozenset({frozenset()})
+                return frozenset()
+            key = (n, state)
+            got = memo.get(key)
+            if got is not None:
+                return got
+            per_color = []
+            dead = False
+            for c in range(4):
+                a = avail[(c, n)]
+                tb = mand[(c, n)]
+                opts = []
+                for u in range(tb, a + 1):
+                    for x in range(0, u + 1):
+                        g = u - x
+                        if g > 2:
+                            continue
+                        for (npair, extl, n_new) in RUN_TRANS[(state[c], x)]:
+                            opts.append((npair, g, u - tb))
+                if not opts:
+                    dead = True
+                    break
+                per_color.append(opts)
+            out = set()
+            if not dead:
+                for o0 in per_color[0]:
+                    for o1 in per_color[1]:
+                        for o2 in per_color[2]:
+                            for o3 in per_color[3]:
+                                gvec = (o0[1], o1[1], o2[1], o3[1])
+                                if any(gvec) and gvec not in GROUP_PARTS:
+                                    continue
+                                sub = suffixes(
+                                    n + 1, (o0[0], o1[0], o2[0], o3[0]))
+                                if not sub:
+                                    continue
+                                here = [((c, n), o[2]) for c, o in
+                                        enumerate((o0, o1, o2, o3)) if o[2]]
+                                if not here:
+                                    out |= sub
+                                else:
+                                    for s in sub:
+                                        d = dict(s)
+                                        for k, v in here:
+                                            d[k] = d.get(k, 0) + v
+                                        out.add(frozenset(d.items()))
+            out = frozenset(out)
+            memo[key] = out
+            return out
+
+        res = []
+        for S in suffixes(1, (EMPTY_PAIR,) * 4):
+            if not S:
+                continue
+            if min_play_value and sum(n * p for (c, n), p in S) < min_play_value:
+                continue
+            res.append(S)
+        return res
+
+    def _gen_joker(self, hand_counter, table_counter, jt, jh):
+        J = jt + jh
+        avail = {}
+        mand = {}
+        for c in range(4):
+            for n in range(1, 14):
+                tile = Tile(COLORS[c], n)
+                t = table_counter.get(tile, 0)
+                avail[(c, n)] = t + hand_counter.get(tile, 0)
+                mand[(c, n)] = t
+        memo = {}
+
+        def suffixes(n, state, j):
+            # set of (real_plays_frozenset, j_final): distinct played-suffixes
+            # (real tiles) with the total jokers placed by the end.
+            if n == 14:
+                if j >= jt and all(l in SAFE for pair in state for l in pair):
+                    return frozenset({(frozenset(), j)})
+                return frozenset()
+            key = (n, state, j)
+            got = memo.get(key)
+            if got is not None:
+                return got
+            budget = J - j
+            per_color = []
+            dead = False
+            for c in range(4):
+                a = avail[(c, n)]
+                tb = mand[(c, n)]
+                opts = []
+                for u in range(tb, a + 1):
+                    for x_real in range(0, u + 1):
+                        g = u - x_real
+                        if g > 2:
+                            continue
+                        for rj in range(0, budget + 1):
+                            trans = RUN_TRANS.get((state[c], x_real + rj))
+                            if not trans:
+                                continue
+                            for (npair, extl, n_new) in trans:
+                                opts.append((npair, g, u - tb, rj))
+                if not opts:
+                    dead = True
+                    break
+                per_color.append(opts)
+            out = set()
+            if not dead:
+                for o0 in per_color[0]:
+                    for o1 in per_color[1]:
+                        for o2 in per_color[2]:
+                            for o3 in per_color[3]:
+                                gvec = (o0[1], o1[1], o2[1], o3[1])
+                                run_jok = o0[3] + o1[3] + o2[3] + o3[3]
+                                if j + run_jok > J:
+                                    continue
+                                nstate = (o0[0], o1[0], o2[0], o3[0])
+                                here = [((c, n), o[2]) for c, o in
+                                        enumerate((o0, o1, o2, o3)) if o[2]]
+                                for jg in range(0, J - j - run_jok + 1):
+                                    if (any(gvec) or jg) and \
+                                            GROUP_PARTS_J.get((*gvec, jg)) is None:
+                                        continue
+                                    sub = suffixes(
+                                        n + 1, nstate, j + run_jok + jg)
+                                    if not sub:
+                                        continue
+                                    for (rp, jf) in sub:
+                                        if here:
+                                            d = dict(rp)
+                                            for k, v in here:
+                                                d[k] = d.get(k, 0) + v
+                                            out.add((frozenset(d.items()), jf))
+                                        else:
+                                            out.add((rp, jf))
+            out = frozenset(out)
+            memo[key] = out
+            return out
+
+        res = []
+        for (rp, jf) in suffixes(1, (EMPTY_PAIR,) * 4, 0):
+            hand_jokers = jf - jt
+            if sum(p for _, p in rp) + hand_jokers <= 0:
+                continue
+            res.append((rp, hand_jokers))
+        return res
+
     def _solve_jokerless(self, hand_counter, table_counter, min_play_value=0):
         swept = self._sweep_jokerless(
             hand_counter, table_counter, min_play_value)
