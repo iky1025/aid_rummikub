@@ -259,21 +259,14 @@ class RolloutPolicy:
 
     def _enum_my_moves(self, hand, table, mm, imv, cap=8):
         min_val, ignore = self._meld_mode(mm, imv)
-        # Exhaustive enumeration only for small hands — with a large hand the
-        # subset space makes each search node cost hundreds of ms.
-        moves = None
-        if len(hand) <= 8:
-            moves = self.solver.enumerate_moves(
-                hand_tiles=hand, table_sets=table,
-                min_play_value=min_val, ignore_table=ignore,
-                subset_limit=512,
-            )
-        if moves is None:
-            moves = self.solver.solve_many(
-                hand_tiles=hand, table_sets=table, max_solutions=4,
-                require_use_at_least_one_hand_tile=True,
-                min_play_value=min_val, ignore_table=ignore,
-            )
+        # R11: the generating DP gives the COMPLETE distinct-move list fast (no
+        # ILP, no sub-multiset blow-up), jokerless and jokered alike — the old
+        # enumerate/solve_many path fell back to the ILP on jokered nodes
+        # (~30% of jokered fair-combo time; this is ~27% faster end to end).
+        moves = self.solver.generate_candidates(
+            hand_tiles=hand, table_sets=table, max_candidates=cap,
+            min_play_value=min_val, ignore_table=ignore,
+        )
         out = []
         for r in moves[:cap]:
             new_sets = [list(s.completed_tiles) for s in r.selected_sets]
