@@ -11,7 +11,7 @@ same deterministic game with roles swapped).
 Usage:
   python eval_mirror.py --policy greedy  --pairs 100
   python eval_mirror.py --policy rollout --pairs 30 --determinizations 8
-  python eval_mirror.py --policy model   --model rummikub_ppo_best_r7.pt
+  python eval_mirror.py --policy student --model distill_s1s_dagger1.pt
 """
 
 import argparse
@@ -238,14 +238,14 @@ def main():
     parser.add_argument("--policy",
                         choices=["greedy", "rollout", "model", "random", "student"],
                         required=True)
-    parser.add_argument("--model", default="rummikub_ppo_best_r7.pt")
+    parser.add_argument("--model", default="distill_s1s_dagger1.pt")
     parser.add_argument("--opponent", choices=["ilp", "random"], default="ilp",
                         help="baseline opponent: greedy-ILP (default) or random")
     parser.add_argument("--pairs", type=int, default=30)
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--max-candidates", type=int, default=20)
     parser.add_argument("--max-turns", type=int, default=100)
-    parser.add_argument("--initial-meld-value", type=int, default=0)
+    parser.add_argument("--initial-meld-value", type=int, default=30)
     parser.add_argument("--determinizations", type=int, default=8)
     parser.add_argument("--rollout-turns", type=int, default=12)
     parser.add_argument("--candidate-cap", type=int, default=6)

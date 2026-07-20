@@ -6,10 +6,16 @@ This project plays a **simplified two-player** variant of Rummikub. This documen
 records exactly what we implemented and how it differs from the official rules,
 so results are interpreted against the right game.
 
+**Full official reference:** [`docs/official_rules.md`](official_rules.md) — an
+audited, sourced transcription of the retail rulebook (Pressman/Goliath doc
+`D-2600-1236-0041`) and the NZRC 2024 tournament rules, compiled 2026-07-20.
+That document is the authority; this one records only our *deltas* from it.
+
 **Sources for the official rules:** [Rummikub official site](https://www.rummikub.org/rules) ·
 [Wikipedia](https://en.wikipedia.org/wiki/Rummikub) ·
 [Pagat](https://www.pagat.com/rummy/rummikub.html) ·
-[Rules PDF](https://fgbradleys.com/wp-content/uploads/rules/Rummikub_Rules.pdf).
+[Retail rulebook PDF](https://rummikub.com/wp-content/uploads/2019/12/2600-English-1.pdf) ·
+[NZRC tournament PDF](https://rummikub.co.nz/wp-content/uploads/2024/05/NZRC-Offical-Playing-Rules.pdf).
 Our implementation: `rummikub_env.py`, `ppo_env.py`, `rummikub_solver.py`.
 
 ## Side-by-side
@@ -29,6 +35,57 @@ Our implementation: `rummikub_env.py`, `ppo_env.py`, `rummikub_solver.py`.
 | Scoring                             | Winner gains the sum of opponents' remaining tile**values**; losers lose their own; joker = **30** penalty | Win/loss is binary (who empties first); a count-based margin is used only for reward /`pair_net` and only at timeout             | simplified to a per-tile signal, not value arithmetic                                                           |
 | Per-turn time limit                 | Some editions: ~1–2 min sand timer**per turn**                                                                  | none                                                                                                                               | not modeled                                                                                                     |
 | First player                        | Chosen at setup                                                                                                        | Optional alternation (`alternate_first_player`) for balanced training/eval                                                       | variance control, not a rule change                                                                             |
+
+## Audit against the official reference (2026-07-20)
+
+Checked every rule in `official_rules.md` against the code. Two buckets: rules we
+**faithfully match** (often subtle ones people get wrong) and rules we **do not
+model**. The deltas are the same handful already tracked above, plus newly-made-
+explicit joker sub-rules that the R11 joker work must handle.
+
+**✅ Faithfully matched (verified in code):**
+
+- **Runs do not wrap** — `13-1-2` / `12-13-1` are rejected (`is_valid_set`
+  verified: `R13 R1 R2` → invalid, `R1 R2 R3` → valid).
+- **Groups cannot repeat a color** — `R9 R9 B9` rejected, even though two `R9`
+  tiles exist.
+- **Two identical sets may coexist on the table** — the ILP uses `upBound=2`
+  integer vars (the "ILP 원죄 버그" fix), so a play needing the same set twice is
+  found, not mis-flagged infeasible.
+- **Voluntary draw even when you can play** — the draw action (slot
+  `max_candidates`) is always unmasked, so drawing is a legal choice on every
+  turn, not forced only when stuck (matches official; greedy simply never uses it).
+- **Can't play a tile you just drew** — a draw ends the turn immediately; the new
+  tile is only playable next turn.
+- **Initial meld: rack-only, ≥30, may be split across sets** — `ignore_table`
+  until melded (no table tiles / no manipulation before melding), and the
+  `min_play_value=30` constraint sums value across all sets laid that turn.
+- **Manipulation must play ≥1 rack tile** — candidates require at least one hand
+  tile used (`require_use_at_least_one_hand_tile`); a pure rearrangement is not a
+  legal "play".
+- **Table fully legal at end of turn** — the solver only returns full valid
+  re-partitions of the table (no loose tiles).
+
+**❌ Not modeled (deltas — the ledger of what "this variant" drops):**
+
+| Official rule | Our variant | Status |
+|---|---|---|
+| 2 jokers (wildcards) | jokerless (104 tiles) | tracked; R11 in progress (`--with-jokers`) |
+| **Joker retrieval** (replace on table, replay same turn, ≥1 rack tile, only after own meld) | **not implemented** — jokers are wildcards + a 30 penalty only, never retrieved | **new explicit gap** — the biggest missing joker sub-rule; deferred in R11 |
+| **Joker value in initial meld** = represented tile's value | current ILP counts `JOKER.number = 0` → **undercounts** the meld (conservative) | **known limitation**; the DP joker extension fixes it automatically (vgain = n×gain) |
+| Joker rack penalty | we use **30** (retail); tournament (NZRC) uses **100** | choice noted — retail value |
+| Value-based scoring (sum of tile face values) | count-based (tiles remaining) | tracked; `--value-scoring` flag exists, inert for 2-player going-out |
+| End on pool-empty-and-stuck; final turn each | 100-turn cap; deck-empty draw = no-op | tracked; `--end-on-stuck` flag exists |
+| Per-turn time limit (60s retail / 40s tourn.) + incomplete-move penalty (revert + draw 3) | no time limit | not modeled (irrelevant to a solver that plays instantly) |
+| Never-melded penalty (100 / 200, tournament) | none | not modeled (tournament-only aggregation rule) |
+| Tournament aggregation (games won, ties by points) | mirror-pair win rate / `pair_net` | not applicable — we measure per-pair, not multi-round standings |
+
+**Takeaway:** our simplifications are exactly the ones already documented (jokers,
+scoring, deck/turn end), plus **two joker sub-rules made explicit here** —
+**retrieval (unimplemented)** and **initial-meld joker value (undercounted in
+ILP)** — both of which land squarely in the R11 joker round. No *new* unexpected
+divergence was found; the numbered-tile game we play is faithful to the official
+run/group/meld/draw/manipulation rules.
 
 ## Notable differences, explained
 

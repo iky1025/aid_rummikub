@@ -42,6 +42,14 @@ def load_dataset(data_dir):
                 if k not in z.files:
                     parts.setdefault(k, []).append(
                         np.full((n, n_actions), np.nan, dtype=np.float32))
+            # is_dagger: this shard's game was played by the student (actor !=
+            # teacher on >=1 decision), so its `outcome` is on-policy for the
+            # student's value head (audit Finding 2, --outcome-coef). Greedy /
+            # teacher self-play shards have actor_action == action everywhere.
+            dag = ("actor_action" in z.files
+                   and bool((z["actor_action"] != z["action"]).any()))
+            parts.setdefault("is_dagger", []).append(
+                np.full(n, dag, dtype=np.uint8))
     data = {k: np.concatenate(v) for k, v in parts.items()}
     n = len(data["action"])
     print(f"loaded {n} decisions from {len(files)} pairs "
@@ -199,15 +207,22 @@ def event_feats(events):
     return out.reshape(len(f), -1)
 
 
-def imitation_loss(logits, mask, action, scores, args):
+def imitation_loss(logits, mask, action, scores, raw_scores, args):
     """Per-row loss combining three signals (R10, post-literature-review):
 
     - soft CE on the teacher's per-candidate rollout scores (softmax at
       --soft-temp) where the teacher evaluated >=2 options — carries the
       *margin* of a deviation instead of just its argmax;
     - one-hot CE (with --dev-weight) on rows without evaluations;
-    - masked value regression (--value-coef) tying all evaluated options,
-      including draw vs play, to one calibrated scale.
+    - masked value regression (--value-coef) tying evaluated options to one
+      calibrated scale.
+
+    `scores` is the merged channel (rollout scores OR vote-fraction x 50) used
+    for soft CE (monotonic, so mixing zeros is harmless). `raw_scores` is the
+    UNMERGED rollout scores (NaN on vote-only rows); the absolute-value
+    regression uses only those (audit Finding 4) — a vote's 0 means "no forced
+    win", a different zero from a rollout's 0 ("even game"), so regressing both
+    to one target corrupts the scale.
     """
     masked = logits.masked_fill(mask == 0, -1e9)
     labeled = ~torch.isnan(scores) & (mask > 0)
@@ -232,9 +247,11 @@ def imitation_loss(logits, mask, action, scores, args):
         row_loss = onehot_loss
 
     loss = row_loss.mean()
-    if args.value_coef > 0 and labeled.any():
-        err = (logits - scores.nan_to_num(0.0) / SCORE_SCALE) ** 2
-        loss = loss + args.value_coef * err[labeled].mean()
+    if args.value_coef > 0:
+        vlabeled = ~torch.isnan(raw_scores) & (mask > 0)   # rollout scores only
+        if vlabeled.any():
+            err = (logits - raw_scores.nan_to_num(0.0) / SCORE_SCALE) ** 2
+            loss = loss + args.value_coef * err[vlabeled].mean()
     return loss, ce
 
 
@@ -276,7 +293,12 @@ def main():
                              "scores / temp) on rows with >=2 evaluations")
     parser.add_argument("--value-coef", type=float, default=0.0,
                         help=">0: masked MSE regression of logits to teacher "
-                             "scores / 50 on evaluated entries")
+                             "ROLLOUT scores / 50 (vote-only rows excluded, "
+                             "audit Finding 4)")
+    parser.add_argument("--outcome-coef", type=float, default=0.0,
+                        help=">0: regress the critic head (forward_value) to "
+                             "the game outcome (+1/-1/0) on DAgger shards "
+                             "(audit Finding 2 — the ExIt value head)")
     parser.add_argument("--history", action="store_true",
                         help="append opponent-event history features (30d, "
                              "right-aligned + validity bit) to the state input")
@@ -347,11 +369,28 @@ def main():
             state, cand, mask, action, opp = to_tensors(data, batch, device)
             scores = torch.tensor(data["scores_merged"][batch],
                                   dtype=torch.float32, device=device)
+            raw_scores = torch.tensor(data["cand_scores"][batch],
+                                      dtype=torch.float32, device=device)
             logits = model.forward_actor(state, cand)
-            loss, ce = imitation_loss(logits, mask, action, scores, args)
+            loss, ce = imitation_loss(
+                logits, mask, action, scores, raw_scores, args)
             if args.aux_coef > 0:
                 aux = F.mse_loss(model.forward_aux(state), opp)
                 loss = loss + args.aux_coef * aux
+            if args.outcome_coef > 0:
+                # Audit Finding 2: wire the (previously dead) critic to the
+                # game outcome. Only rows the *actor* itself played are on-
+                # policy for its value head, so gate to DAgger shards where the
+                # student was the actor (is_dagger); greedy/teacher-played
+                # states are off-distribution for the student's value.
+                dag = torch.tensor(data["is_dagger"][batch],
+                                   dtype=torch.bool, device=device)
+                if dag.any():
+                    value = model.forward_value(state)
+                    outc = torch.tensor(data["outcome"][batch],
+                                        dtype=torch.float32, device=device)
+                    loss = loss + args.outcome_coef * (
+                        (value[dag] - outc[dag]) ** 2).mean()
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()

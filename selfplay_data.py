@@ -253,7 +253,7 @@ def main():
                         help="who PLAYS the game; the teacher always labels. "
                              "'student' = DAgger collection on the student's "
                              "own state distribution")
-    parser.add_argument("--actor-model", default="distill_s1s_t03_v05.pt")
+    parser.add_argument("--actor-model", default="distill_s1s_dagger1.pt")
     parser.add_argument("--actor-history", action="store_true")
     parser.add_argument("--actor-margin", type=float, default=0.0)
     parser.add_argument("--workers", type=int, default=1)
