@@ -177,7 +177,70 @@ class RummikubDP:
         return self._solve_joker(
             hand_counter, table_counter, min_play_value, jt, jh)
 
+    def solve_all_k(self, hand_counter, table_counter, min_play_value=0):
+        """Tile-count diversification from a SINGLE sweep: {k: sets} giving, for
+        each achievable hand-tile count k >= 1, one valid full arrangement that
+        uses exactly k hand tiles (all table tiles used, played value >=
+        min_play_value). Replaces solve_many Phase 1's per-k ILP exact-k calls.
+
+        Joker positions support min_play_value == 0 only (meld+joker stays on
+        the ILP). Not memoized (distinct return shape from solve)."""
+        jt = table_counter.get(JOKER, 0)
+        jh = hand_counter.get(JOKER, 0)
+        if jt + jh == 0:
+            swept = self._sweep_jokerless(
+                hand_counter, table_counter, min_play_value)
+            if swept is None:
+                return {}
+            layer, parents, cap_v = swept
+            return self._all_k_jokerless(layer, parents, cap_v)
+        assert min_play_value == 0, "joker solve_all_k handles max-play only"
+        swept = self._sweep_joker(hand_counter, table_counter, jt, jh)
+        if swept is None:
+            return {}
+        layer, parents, J = swept
+        return self._all_k_joker(layer, parents, jt)
+
     def _solve_jokerless(self, hand_counter, table_counter, min_play_value=0):
+        swept = self._sweep_jokerless(
+            hand_counter, table_counter, min_play_value)
+        if swept is None:
+            return None
+        layer, parents, cap_v = swept
+        # final: all runs safe; pick max tiles meeting value threshold
+        best = None
+        for state, keymap in layer.items():
+            if any(l not in SAFE for pair in state for l in pair):
+                continue
+            for (tiles, val) in keymap:
+                if cap_v and val < cap_v:
+                    continue
+                if best is None or tiles > best[2]:
+                    best = (state, (tiles, val), tiles)
+        if best is None:
+            return None
+        return best[2], self._traceback(best[0], best[1], parents)
+
+    def _all_k_jokerless(self, layer, parents, cap_v):
+        """One valid arrangement per achievable hand-tile count k (>=1), read
+        off a single completed sweep. k here == tiles (real hand tiles used)."""
+        per_k = {}
+        for state, keymap in layer.items():
+            if any(l not in SAFE for pair in state for l in pair):
+                continue
+            for (tiles, val) in keymap:
+                if cap_v and val < cap_v:
+                    continue
+                if tiles <= 0 or tiles in per_k:
+                    continue
+                per_k[tiles] = (state, (tiles, val))
+        return {k: self._traceback(s, key, parents)
+                for k, (s, key) in per_k.items()}
+
+    def _sweep_jokerless(self, hand_counter, table_counter, min_play_value=0):
+        """Shared number-sweep (jokerless). Returns (final_layer, parents,
+        cap_v), or None if the table itself cannot be arranged. `solve` and
+        `solve_all_k` both read the same completed layer."""
         avail = {}
         mand = {}
         for c in range(4):
@@ -251,22 +314,7 @@ class RummikubDP:
             layer = new_layer
             if not layer:
                 return None
-
-        # final: all runs safe; pick max tiles meeting value threshold
-        best = None
-        for state, keymap in layer.items():
-            if any(l not in SAFE for pair in state for l in pair):
-                continue
-            for (tiles, val) in keymap:
-                if cap_v and val < cap_v:
-                    continue
-                if best is None or tiles > best[2]:
-                    best = (state, (tiles, val), tiles)
-        if best is None:
-            return None
-
-        sets = self._traceback(best[0], best[1], parents)
-        return best[2], sets
+        return layer, parents, cap_v
 
     def _solve_joker(self, hand_counter, table_counter, min_play_value, jt, jh):
         """R11 max-play with jokers (min_play_value must be 0 — the meld case
@@ -277,6 +325,46 @@ class RummikubDP:
         final state needs j >= jt, and the played-hand count is
         real_hand_tiles + (j - jt) hand jokers."""
         assert min_play_value == 0, "joker DP handles max-play only"
+        swept = self._sweep_joker(hand_counter, table_counter, jt, jh)
+        if swept is None:
+            return None
+        layer, parents, J = swept
+        best = None
+        for state, keymap in layer.items():
+            if any(l not in SAFE for pair in state[:4] for l in pair):
+                continue
+            j = state[4]
+            if j < jt:
+                continue
+            for tiles in keymap:
+                total = tiles + (j - jt)
+                if best is None or total > best[1]:
+                    best = (state, total, tiles)
+        if best is None:
+            return None
+        return best[1], self._traceback_joker(best[0], best[2], parents)
+
+    def _all_k_joker(self, layer, parents, jt):
+        """One valid arrangement per achievable hand-tile count k (>=1). Here
+        k == real hand tiles + (jokers placed - table jokers)."""
+        per_k = {}
+        for state, keymap in layer.items():
+            if any(l not in SAFE for pair in state[:4] for l in pair):
+                continue
+            j = state[4]
+            if j < jt:
+                continue
+            for tiles in keymap:
+                total = tiles + (j - jt)
+                if total <= 0 or total in per_k:
+                    continue
+                per_k[total] = (state, tiles)
+        return {k: self._traceback_joker(s, tk, parents)
+                for k, (s, tk) in per_k.items()}
+
+    def _sweep_joker(self, hand_counter, table_counter, jt, jh):
+        """Shared jokered max-play sweep. Returns (final_layer, parents, J) or
+        None. State carries j = jokers placed; table jokers (jt) are mandatory."""
         J = jt + jh
         avail = {}
         mand = {}
@@ -356,23 +444,7 @@ class RummikubDP:
             layer = new_layer
             if not layer:
                 return None
-
-        best = None
-        for state, keymap in layer.items():
-            if any(l not in SAFE for pair in state[:4] for l in pair):
-                continue
-            j = state[4]
-            if j < jt:                           # all table jokers must be placed
-                continue
-            for tiles in keymap:
-                total = tiles + (j - jt)         # real hand tiles + hand jokers
-                if best is None or total > best[1]:
-                    best = (state, total, tiles)
-        if best is None:
-            return None
-
-        sets = self._traceback_joker(best[0], best[2], parents)
-        return best[1], sets
+        return layer, parents, J
 
     def _traceback_joker(self, state, key, parents):
         chain = [None] * 13
