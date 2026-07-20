@@ -49,6 +49,65 @@ def load_dataset(data_dir):
     return data
 
 
+def dedupe_candidates(data):
+    """Audit Finding 1: ~45% of candidate slots are byte-identical duplicates
+    (arrangement-only variants — the count encoding drops the partition). Keep
+    one candidate per identical cand_feats group, remap the teacher's action to
+    the kept index, and compact mask/scores/votes. The teacher's action is the
+    lowest index of its group (label convention), which is the one kept, so the
+    remap is well defined. The draw action (index == max_candidates) is left in
+    place. Soft-CE optimum is unchanged; this removes the per-pool tie floor
+    from val_ce and the crowding of real moves in downstream code."""
+    N, W, F = data["cand_feats"].shape
+    draw = W                                   # draw action index (mask width-1)
+    cf, mask, act, nc = (data["cand_feats"], data["mask"], data["action"],
+                         data["n_candidates"])
+    has_ev = "cand_scores" in data
+    new_cf = np.zeros_like(cf)
+    new_mask = np.zeros_like(mask)
+    new_act = act.copy()
+    new_nc = nc.copy()
+    if has_ev:
+        new_sc = np.full_like(data["cand_scores"], np.nan)
+        new_vt = np.full_like(data["cand_votes"], np.nan)
+    removed = 0
+    for r in range(N):
+        n = int(nc[r])
+        seen, keep = {}, 0
+        for i in range(n):
+            key = cf[r, i].tobytes()
+            j = seen.get(key)
+            if j is None:
+                seen[key] = keep
+                new_cf[r, keep] = cf[r, i]
+                new_mask[r, keep] = 1.0
+                if has_ev:
+                    new_sc[r, keep] = data["cand_scores"][r, i]
+                    new_vt[r, keep] = data["cand_votes"][r, i]
+                if int(act[r]) == i:
+                    new_act[r] = keep
+                keep += 1
+            else:
+                removed += 1
+                if int(act[r]) == i:      # shouldn't happen (convention), but be safe
+                    new_act[r] = j
+        new_mask[r, draw] = 1.0
+        if has_ev:
+            new_sc[r, draw] = data["cand_scores"][r, draw]
+            new_vt[r, draw] = data["cand_votes"][r, draw]
+        if int(act[r]) >= n:              # draw
+            new_act[r] = draw
+        new_nc[r] = keep
+    data["cand_feats"], data["mask"], data["action"], data["n_candidates"] = (
+        new_cf, new_mask, new_act, new_nc)
+    if has_ev:
+        data["cand_scores"], data["cand_votes"] = new_sc, new_vt
+    tot = int(nc[:N].sum())
+    print(f"deduped candidates: removed {removed}/{tot} slots "
+          f"({100 * removed / max(tot, 1):.1f}%)", flush=True)
+    return data
+
+
 def check_label_convention(data):
     """Guard the load-bearing (and *accidental*) label-index convention.
 
@@ -112,22 +171,32 @@ def to_tensors(data, idx, device):
 
 SCORE_SCALE = 50.0  # rollout WIN_SCORE; brings scores to roughly [-1.5, 1.5]
 
-EVENT_FEAT_DIM = 6 * 4  # selfplay_data.EVENT_HISTORY_LEN x (drew, before, after, pre_meld)
+EVENT_FEAT_DIM = 6 * 5  # EVENT_HISTORY_LEN x (drew, before, after, pre_meld, valid)
 
 
 def event_feats(events):
-    """(N, 6, 4) int16 opponent-event history -> (N, 24) float features.
+    """(N, 6, 4) int16 opponent-event history -> (N, 30) float features.
 
-    Columns: drew (0/1), hand_before/14, hand_after/14, pre_meld (0/1);
-    -1 padding rows are zeroed. The teacher's consistent determinization
-    reads exactly this history — without it part of the teacher's deviations
-    is unlearnable from the observation (imitation gap)."""
+    Columns per row: drew (0/1), hand_before/14, hand_after/14, pre_meld (0/1),
+    valid (0/1). Fixes audit Finding 5: rows are RIGHT-ALIGNED (the most recent
+    turn is always the last slot, so a given slot means the same thing every
+    turn) and carry an explicit validity bit (a padded row is all-zero AND
+    valid=0, so drew=0 padding is not confused with a real no-draw turn). The
+    teacher's consistent determinization reads exactly this history — without it
+    part of the teacher's deviations is unlearnable from the obs (imitation gap).
+    Input is left-aligned (valid rows first, -1 padding at the end)."""
     f = events.astype(np.float32)
-    pad = f[..., 0] < 0
+    valid = (f[..., 0] >= 0).astype(np.float32)          # (N, 6)
     f[..., 1] /= 14.0
     f[..., 2] /= 14.0
-    f[pad] = 0.0
-    return f.reshape(len(f), -1)
+    f[valid == 0] = 0.0
+    f = np.concatenate([f, valid[..., None]], axis=-1)   # (N, 6, 5)
+    out = np.zeros_like(f)
+    for r in range(len(f)):                              # right-align valid rows
+        k = int(valid[r].sum())
+        if k:
+            out[r, -k:] = f[r, :k]
+    return out.reshape(len(f), -1)
 
 
 def imitation_loss(logits, mask, action, scores, args):
@@ -209,8 +278,12 @@ def main():
                         help=">0: masked MSE regression of logits to teacher "
                              "scores / 50 on evaluated entries")
     parser.add_argument("--history", action="store_true",
-                        help="append opponent-event history features (24d) "
-                             "to the state input")
+                        help="append opponent-event history features (30d, "
+                             "right-aligned + validity bit) to the state input")
+    parser.add_argument("--dedupe", action="store_true",
+                        help="audit Finding 1: drop byte-identical duplicate "
+                             "candidates at load (remaps action). Off by default "
+                             "to keep baselines comparable; A/B it explicitly.")
     parser.add_argument("--max-candidates", type=int, default=20)
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--device", default=None)
@@ -229,6 +302,8 @@ def main():
 
     data = load_dataset(args.data)
     check_label_convention(data)
+    if args.dedupe:
+        dedupe_candidates(data)
     # Unify the two teacher-evaluation channels into one score matrix:
     # rollout scores as-is; endgame win-forcing vote fractions scaled to the
     # same units (fraction x WIN_SCORE ~ forced-win expected value).
