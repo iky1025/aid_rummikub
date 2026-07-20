@@ -222,11 +222,18 @@ class RummikubDP:
             raw = self._gen_jokerless(hand_counter, table_counter, min_play_value)
             moves = [Counter({Tile(COLORS[c], n): p for (c, n), p in S})
                      for S in raw]
-        else:
-            assert min_play_value == 0, "joker generate_moves is max-play only"
+        elif min_play_value == 0:
             moves = []
             for rp, hand_jokers in self._gen_joker(
                     hand_counter, table_counter, jt, jh):
+                m = Counter({Tile(COLORS[c], n): p for (c, n), p in rp})
+                if hand_jokers:
+                    m[JOKER] = hand_jokers
+                moves.append(m)
+        else:
+            moves = []
+            for rp, hand_jokers in self._gen_joker_meld(
+                    hand_counter, table_counter, jt, jh, min_play_value):
                 m = Counter({Tile(COLORS[c], n): p for (c, n), p in rp})
                 if hand_jokers:
                     m[JOKER] = hand_jokers
@@ -391,6 +398,111 @@ class RummikubDP:
         for (rp, jf) in suffixes(1, (EMPTY_PAIR,) * 4, 0):
             hand_jokers = jf - jt
             if sum(p for _, p in rp) + hand_jokers <= 0:
+                continue
+            res.append((rp, hand_jokers))
+        return res
+
+    def _gen_joker_meld(self, hand_counter, table_counter, jt, jh,
+                        min_play_value):
+        """Jokered generate_moves with a meld value threshold. Same sweep as
+        _gen_joker but also tracks the joker PLACEMENT numbers (<=2 jokers) so
+        the played value can count each hand joker at its represented value (=
+        the sweep number it fills). Table jokers (jt) are assigned to the
+        LOWEST placements (value 0) to maximise the claimed meld value — this is
+        exactly what fixes the ILP's joker-meld undercount."""
+        J = jt + jh
+        avail = {}
+        mand = {}
+        for c in range(4):
+            for n in range(1, 14):
+                tile = Tile(COLORS[c], n)
+                t = table_counter.get(tile, 0)
+                avail[(c, n)] = t + hand_counter.get(tile, 0)
+                mand[(c, n)] = t
+        memo = {}
+
+        def suffixes(n, state, j):
+            # set of (real_plays_frozenset, j_final, sorted placements tuple)
+            if n == 14:
+                if j >= jt and all(l in SAFE for pair in state for l in pair):
+                    return frozenset({(frozenset(), j, ())})
+                return frozenset()
+            key = (n, state, j)
+            got = memo.get(key)
+            if got is not None:
+                return got
+            budget = J - j
+            per_color = []
+            dead = False
+            for c in range(4):
+                a = avail[(c, n)]
+                tb = mand[(c, n)]
+                opts = []
+                for u in range(tb, a + 1):
+                    for x_real in range(0, u + 1):
+                        g = u - x_real
+                        if g > 2:
+                            continue
+                        for rj in range(0, budget + 1):
+                            trans = RUN_TRANS.get((state[c], x_real + rj))
+                            if not trans:
+                                continue
+                            for (npair, extl, n_new) in trans:
+                                opts.append((npair, g, u - tb, rj))
+                if not opts:
+                    dead = True
+                    break
+                per_color.append(opts)
+            out = set()
+            if not dead:
+                for o0 in per_color[0]:
+                    for o1 in per_color[1]:
+                        for o2 in per_color[2]:
+                            for o3 in per_color[3]:
+                                gvec = (o0[1], o1[1], o2[1], o3[1])
+                                run_jok = o0[3] + o1[3] + o2[3] + o3[3]
+                                if j + run_jok > J:
+                                    continue
+                                nstate = (o0[0], o1[0], o2[0], o3[0])
+                                here = [((c, n), o[2]) for c, o in
+                                        enumerate((o0, o1, o2, o3)) if o[2]]
+                                for jg in range(0, J - j - run_jok + 1):
+                                    if (any(gvec) or jg) and \
+                                            GROUP_PARTS_J.get((*gvec, jg)) is None:
+                                        continue
+                                    here_jok = run_jok + jg
+                                    sub = suffixes(
+                                        n + 1, nstate, j + run_jok + jg)
+                                    if not sub:
+                                        continue
+                                    for (rp, jf, pl) in sub:
+                                        npl = tuple(sorted(pl + (n,) * here_jok))
+                                        if here:
+                                            d = dict(rp)
+                                            for k, v in here:
+                                                d[k] = d.get(k, 0) + v
+                                            out.add(
+                                                (frozenset(d.items()), jf, npl))
+                                        else:
+                                            out.add((rp, jf, npl))
+            out = frozenset(out)
+            memo[key] = out
+            return out
+
+        # per (rp, jf) keep the max hand-meld value over placement assignments
+        best = {}
+        for (rp, jf, pl) in suffixes(1, (EMPTY_PAIR,) * 4, 0):
+            real_val = sum(n * p for (c, n), p in rp)
+            hand_val = real_val + sum(pl) - sum(sorted(pl)[:jt])
+            key = (rp, jf)
+            if hand_val > best.get(key, -1):
+                best[key] = hand_val
+        res = []
+        for (rp, jf), val in best.items():
+            hand_jokers = jf - jt
+            if sum(p for _, p in rp) + hand_jokers <= 0:
+                continue
+            if val < min_play_value:
                 continue
             res.append((rp, hand_jokers))
         return res

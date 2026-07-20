@@ -708,11 +708,7 @@ class RummikubILPSolver:
         min_play_value == 0 only (meld+joker not modelled)."""
         if table_sets is None:
             table_sets = []
-        has_joker = any(t.is_joker for t in hand_tiles) or any(
-            t.is_joker for s in table_sets for t in s)
-        # The generating DP models jokers for max-play only; the jokered meld
-        # (min_play_value > 0) falls back to the ILP, as the joker DP does.
-        if self.dp is None or (has_joker and min_play_value > 0):
+        if self.dp is None:
             return self.solve_many(hand_tiles, table_sets, max_candidates,
                                    True, min_play_value, ignore_table)
         table_tiles = [] if ignore_table else flatten(table_sets)
