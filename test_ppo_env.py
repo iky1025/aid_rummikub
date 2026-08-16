@@ -13,6 +13,16 @@ def main():
     obs = env.reset()
     obs, cand_feats, mask = env.get_policy_inputs()
 
+    assert obs.shape == (108,)
+    assert np.allclose(obs[-2:], [0.0, 0.0])
+    assert np.isclose(obs[-3], len(env.hands[env.ilp_player]) / 30.0)
+
+    candidate_signatures = [
+        env._candidate_state_signature(env.ppo_player, candidate)
+        for candidate in env.last_candidates
+    ]
+    assert len(candidate_signatures) == len(set(candidate_signatures))
+
     print("initial observation shape:", obs.shape)
     print("initial candidate feature shape:", cand_feats.shape)
     print("initial state:")

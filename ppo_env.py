@@ -1,10 +1,12 @@
-import copy
 from collections import Counter
 
 import numpy as np
 
 from rummikub_env import RummikubEnv
 from rummikub_solver import COLORS, flatten
+
+
+OPPONENT_HAND_NORMALIZATION_CAP = 30.0
 
 
 class RummikubPPOEnv:
@@ -164,11 +166,23 @@ class RummikubPPOEnv:
         deck_count = np.array([len(self.env.deck) / 104.0], dtype=np.float32)
         opponent_id = 1 - player_id
         opponent_hand_count = np.array(
-            [len(self.hands[opponent_id]) / 104.0],
+            [
+                min(
+                    len(self.hands[opponent_id]),
+                    OPPONENT_HAND_NORMALIZATION_CAP,
+                )
+                / OPPONENT_HAND_NORMALIZATION_CAP
+            ],
+            dtype=np.float32,
+        )
+        opened_state = np.array(
+            [float(self.opened[player_id]), float(self.opened[opponent_id])],
             dtype=np.float32,
         )
 
-        obs = np.concatenate([hand_vector, table_vector, deck_count, opponent_hand_count])
+        obs = np.concatenate(
+            [hand_vector, table_vector, deck_count, opponent_hand_count, opened_state]
+        )
         return obs.astype(np.float32)
 
     def get_policy_inputs(self):
@@ -183,13 +197,18 @@ class RummikubPPOEnv:
         mask = np.zeros(self.max_candidates + 1, dtype=np.float32)
 
         for i, candidate in enumerate(self.last_candidates):
-            sim_env = copy.deepcopy(self.env)
+            next_hand = self.tiles_to_vector(candidate.remaining_hand)
+
+            candidate_table_sets = [
+                selected_set.completed_tiles
+                for selected_set in candidate.selected_sets
+            ]
             if self.opened[self.ppo_player]:
-                sim_env.apply_solution(candidate)
+                next_table_sets = candidate_table_sets
             else:
-                self._apply_initial_meld_to_env(sim_env, candidate)
-            next_hand = self.tiles_to_vector(sim_env.hand)
-            next_table = self.tiles_to_vector(flatten(sim_env.table_sets))
+                next_table_sets = self.env.table_sets + candidate_table_sets
+
+            next_table = self.tiles_to_vector(flatten(next_table_sets))
             cand_feats[i] = np.concatenate([next_hand, next_table]).astype(np.float32)
             mask[i] = 1.0
 
@@ -211,7 +230,7 @@ class RummikubPPOEnv:
     def _generate_candidates_for_player(self, player_id):
         if self.opened[player_id]:
             raw = self.env.solve_candidate_moves(max_candidates=self.max_candidates)[: self.max_candidates]
-            return raw
+            return self._deduplicate_candidates(player_id, raw)
 
         # First meld: generate candidates from hand only (no table tile usage).
         raw = self.env.solver.solve_many(
@@ -220,7 +239,47 @@ class RummikubPPOEnv:
             max_solutions=self.max_candidates,
             require_use_at_least_one_hand_tile=True,
         )[: self.max_candidates]
-        return self._filter_candidates_for_player(player_id, raw)
+        filtered = self._filter_candidates_for_player(player_id, raw)
+        return self._deduplicate_candidates(player_id, filtered)
+
+    def _deduplicate_candidates(self, player_id, candidates):
+        unique_candidates = []
+        seen_states = set()
+
+        for candidate in candidates:
+            state_signature = self._candidate_state_signature(player_id, candidate)
+            if state_signature in seen_states:
+                continue
+
+            seen_states.add(state_signature)
+            unique_candidates.append(candidate)
+
+        return unique_candidates
+
+    def _candidate_state_signature(self, player_id, candidate):
+        candidate_table_sets = [
+            selected_set.completed_tiles
+            for selected_set in candidate.selected_sets
+        ]
+        if self.opened[player_id]:
+            next_table_sets = candidate_table_sets
+        else:
+            next_table_sets = self.env.table_sets + candidate_table_sets
+
+        return (
+            self._tiles_signature(candidate.remaining_hand),
+            self._tiles_signature(flatten(next_table_sets)),
+        )
+
+    @staticmethod
+    def _tiles_signature(tiles):
+        counts = Counter(tiles)
+        return tuple(
+            sorted(
+                (tile.color, tile.number, count)
+                for tile, count in counts.items()
+            )
+        )
 
     def _apply_initial_meld(self, result):
         self._apply_initial_meld_to_env(self.env, result)

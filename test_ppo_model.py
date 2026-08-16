@@ -16,7 +16,7 @@ def main():
     obs, cand_feats, mask = env.get_policy_inputs()
 
     model = ActorCritic(
-        obs_dim=106,
+        obs_dim=108,
         cand_feat_dim=104,
         max_candidates=20,
     )

@@ -35,7 +35,7 @@ def train():
         seed=42,
     )
 
-    obs_dim = 52 + 52 + 2
+    obs_dim = 52 + 52 + 4
     cand_feat_dim = 52 + 52
     action_dim = max_candidates + 1
 

@@ -12,7 +12,7 @@ def evaluate(model_path="rummikub_ppo_model.pt", episodes=20, seed=123):
 
     max_candidates = 20 
     max_turns = 100
-    obs_dim = 52 + 52 + 2
+    obs_dim = 52 + 52 + 4
     cand_feat_dim = 52 + 52
 
     env = RummikubPPOEnv(
