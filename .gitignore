@@ -6,3 +6,17 @@ readme.md
 __pycache__/
 *.py[cod]
 *.pt
+experiment_status.json
+train_full.log
+train_full_before_resume.log
+train_full_resume_787_914.log
+train_full_resume_914_1324.log
+eval_full.log
+eval_progress.json
+eval_progress.json.tmp
+eval_progress.json.*.tmp
+eval_results.jsonl
+train_diverse.log
+eval_diverse.log
+eval_diverse_progress.json
+eval_diverse_results.jsonl

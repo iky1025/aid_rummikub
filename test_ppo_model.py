@@ -16,8 +16,8 @@ def main():
     obs, cand_feats, mask = env.get_policy_inputs()
 
     model = ActorCritic(
-        obs_dim=105,
-        cand_feat_dim=104,
+        obs_dim=env.OBS_DIM,
+        cand_feat_dim=env.CAND_FEAT_DIM,
         max_candidates=10,
     )
 
@@ -41,6 +41,10 @@ def main():
 
     valid_actions = np.where(mask == 1)[0]
     print("valid_actions:", valid_actions)
+
+    assert obs_tensor.shape == (env.OBS_DIM,)
+    assert cand_tensor.shape == (10, env.CAND_FEAT_DIM)
+    assert action.item() in valid_actions
 
     if action.item() in valid_actions:
         print("ok: selected action is valid.")

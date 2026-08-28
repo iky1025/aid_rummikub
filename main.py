@@ -28,7 +28,9 @@ def print_candidate_results(results):
 
     for i, result in enumerate(results):
         print(f"\n--- candidate {i} ---")
+        print("strategy:", result.strategy)
         print("used hand tiles:", result.used_hand_tile_count)
+        print("used hand score:", result.used_hand_tile_score)
 
         print("selected sets:")
         for j, tile_set in enumerate(result.selected_sets):

@@ -14,6 +14,8 @@ from rummikub_solver import (
 
 
 class RummikubEnv:
+    INITIAL_MELD_MIN_SCORE = 30
+
     def __init__(
         self,
         seed: Optional[int] = None,
@@ -26,6 +28,7 @@ class RummikubEnv:
         self.deck = []
         self.hand = []
         self.table_sets = []
+        self.initial_meld_done = False
 
         self.reset()
 
@@ -44,6 +47,7 @@ class RummikubEnv:
         hand: Optional[Sequence[Tile]] = None,
         table_sets: Optional[Sequence[Sequence[Tile]]] = None,
         shuffle: bool = True,
+        initial_meld_done: bool = False,
     ):
         self.deck = self.make_full_deck()
 
@@ -70,6 +74,7 @@ class RummikubEnv:
         if not validate_table_sets(self.table_sets):
             raise ValueError("invalid table sets in reset")
 
+        self.initial_meld_done = initial_meld_done
         return self.get_state()
 
     def _remove_known_tiles_from_deck(self, tiles):
@@ -84,6 +89,7 @@ class RummikubEnv:
             "hand": list(self.hand),
             "table_sets": [list(tile_set) for tile_set in self.table_sets],
             "deck_count": len(self.deck),
+            "initial_meld_done": self.initial_meld_done,
         }
 
     def draw_tile(self):
@@ -99,6 +105,8 @@ class RummikubEnv:
             hand_tiles=self.hand,
             table_sets=self.table_sets,
             require_use_at_least_one_hand_tile=False,
+            table_locked=not self.initial_meld_done,
+            min_used_hand_tile_score=self._required_initial_meld_score(),
         )
 
     def solve_candidate_moves(self, max_candidates=10):
@@ -107,18 +115,32 @@ class RummikubEnv:
             table_sets=self.table_sets,
             max_solutions=max_candidates,
             require_use_at_least_one_hand_tile=True,
+            table_locked=not self.initial_meld_done,
+            min_used_hand_tile_score=self._required_initial_meld_score(),
         )
 
     def apply_solution(self, result):
         if result.status != "Optimal":
             raise RuntimeError(f"cannot apply non-optimal result: {result.status}")
 
-        self.table_sets = []
-        for selected_set in result.selected_sets:
-            self.table_sets.append(list(selected_set.completed_tiles))
+        if result.table_locked:
+            new_table_sets = [list(tile_set) for tile_set in self.table_sets]
+        else:
+            new_table_sets = []
 
+        for selected_set in result.selected_sets:
+            new_table_sets.append(list(selected_set.completed_tiles))
+
+        self.table_sets = new_table_sets
         self.hand = list(result.remaining_hand)
+        if result.used_hand_tile_score >= self.INITIAL_MELD_MIN_SCORE:
+            self.initial_meld_done = True
         return self.get_state()
+
+    def _required_initial_meld_score(self):
+        if self.initial_meld_done:
+            return 0
+        return self.INITIAL_MELD_MIN_SCORE
 
     def render(self):
         print("\n=== RummikubEnv ===")
@@ -136,3 +158,4 @@ class RummikubEnv:
                 print(f"  {i}: {format_tiles(tile_set)}")
 
         print("deck:", len(self.deck))
+        print("initial meld:", "done" if self.initial_meld_done else "not done")
