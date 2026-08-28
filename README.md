@@ -164,16 +164,85 @@ CBC 자식 프로세스를 종료해 학습 전체가 멈추는 것을 방지한
 
 ## PPO 모델
 
-Actor-Critic 구조를 사용한다.
+`ppo_model.py`의 `ActorCritic`을 사용하며 전체 파라미터 수는 95,363개이다.
+상태와 각 후보를 별도로 encoding한 다음 두 embedding을 결합해 후보마다
+점수를 계산한다.
 
-- state encoder: 현재 observation을 128차원 embedding으로 변환
-- candidate encoder: 모든 후보에 공유되는 encoder
-- score head: `(state embedding, candidate embedding)`으로 후보별 logit 계산
-- draw head: state embedding만 사용해 draw logit 계산
-- critic: 현재 상태의 value 예측
+```text
+                          Actor
 
-후보마다 동일한 encoder와 score head를 사용하므로 후보 슬롯 번호가 아니라
-각 후보의 상태와 구조를 보고 점수를 계산한다.
+현재 상태 obs [B, 109]
+        |
+        v
+Linear(109, 128) + ReLU
+        |
+Linear(128, 128) + ReLU
+        |
+        +------------------------------+
+        | state embedding [B, 128]     |
+        |                              |
+        |                    후보 features [B, 10, 116]
+        |                              |
+        |                    Linear(116, 128) + ReLU
+        |                              |
+        |                    Linear(128, 128) + ReLU
+        |                              |
+        |                    candidate embeddings
+        |                    [B, 10, 128]
+        |                              |
+        +--> 후보 수만큼 확장 ----------+
+                       |
+                       v
+            concatenate [B, 10, 256]
+                       |
+            Linear(256, 128) + ReLU
+                       |
+                 Linear(128, 1)
+                       |
+              candidate logits [B, 10]
+
+state embedding [B, 128]
+        |
+Linear(128, 1)
+        |
+draw logit [B, 1]
+
+candidate logits 10개 + draw logit 1개
+        |
+actor logits [B, 11]
+```
+
+Critic은 후보를 사용하지 않고 현재 상태만으로 value를 예측한다.
+
+```text
+                    Critic
+
+state embedding [B, 128]
+        |
+Linear(128, 1)
+        |
+state value [B, 1]
+```
+
+각 모듈의 구조와 파라미터 수는 다음과 같다.
+
+| 모듈 | 구조 | 파라미터 수 |
+|---|---|---:|
+| State encoder | 109 -> 128 -> 128 | 30,592 |
+| Candidate encoder | 116 -> 128 -> 128 | 31,488 |
+| Candidate score head | 256 -> 128 -> 1 | 33,025 |
+| Draw head | 128 -> 1 | 129 |
+| Critic | 128 -> 1 | 129 |
+| 전체 | Actor-Critic | 95,363 |
+
+Candidate encoder와 score head는 10개 후보가 공유한다. 따라서 후보가
+10개라고 해서 네트워크 파라미터가 10배로 증가하지 않으며, 후보 순서보다
+각 후보의 feature를 기준으로 점수를 계산한다.
+
+학습할 때는 action mask로 합법 후보와 draw만 남긴 뒤 `Categorical`
+분포에서 action을 sampling한다. 평가할 때는 mask가 적용된 11개 logit 중
+가장 큰 값을 가진 action을 선택한다. Critic이 예측한 value는 GAE와 PPO
+value loss 계산에 사용한다.
 
 ## Reward V2
 
