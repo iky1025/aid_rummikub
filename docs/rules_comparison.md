@@ -1,4 +1,3 @@
-ㅏ
 
 # Implemented rules vs. official Rummikub
 
@@ -26,7 +25,7 @@ Our implementation: `rummikub_env.py`, `ppo_env.py`, `rummikub_solver.py`.
 | Players                             | 2–4                                                                                                                   | **2 only**                                                                                                                   | Head-to-head is the cleanest setting to measure skill vs. a baseline.                                           |
 | Deal                                | 14 tiles each                                                                                                          | 14 tiles each                                                                                                                      | same                                                                                                            |
 | Valid sets                          | **Run** (≥3 consecutive, same color) · **Group** (3–4 same number, different colors)                    | same                                                                                                                               | same                                                                                                            |
-| Initial meld                        | First play must total**≥ 30 points**, from your own rack only; no table manipulation until you've melded        | same (`initial_meld_value=30`, `ignore_table` until melded)                                                                    | matches the official rule (our standard config)                                                                 |
+| Initial meld                        | First play must total**≥ 30 points**, from your own rack only; no table manipulation until you've melded              | same (`initial_meld_value=30`, `ignore_table` until melded)                                                                    | matches the official rule (our standard config)                                                                 |
 | Table manipulation                  | Allowed**after** your initial meld (rearrange any table tiles)                                                   | Allowed after meld; the solver may fully re-partition the table                                                                    | matches; the ILP/DP solver performs the rearrangement                                                           |
 | Turn: can't/won't play              | Draw**1** tile from the pool; turn ends                                                                          | Draw 1 tile; turn ends                                                                                                             | matches                                                                                                         |
 | Pool (deck) empties                 | Play continues; you simply**can't draw**. Game ends when the pool is empty **and no one can play**         | Drawing becomes a**no-op** (`draw_tile()` returns `None`, hand unchanged); the game does **not** end on pool-empty | approximated — see §"Deck exhaustion"                                                                         |
@@ -68,17 +67,17 @@ explicit joker sub-rules that the R11 joker work must handle.
 
 **❌ Not modeled (deltas — the ledger of what "this variant" drops):**
 
-| Official rule | Our variant | Status |
-|---|---|---|
-| 2 jokers (wildcards) | jokerless (104 tiles) | tracked; R11 in progress (`--with-jokers`) |
-| **Joker retrieval** (replace on table, replay same turn, ≥1 rack tile, only after own meld) | **not implemented** — jokers are wildcards + a 30 penalty only, never retrieved | **new explicit gap** — the biggest missing joker sub-rule; deferred in R11 |
-| **Joker value in initial meld** = represented tile's value | current ILP counts `JOKER.number = 0` → **undercounts** the meld (conservative) | **known limitation**; the DP joker extension fixes it automatically (vgain = n×gain) |
-| Joker rack penalty | we use **30** (retail); tournament (NZRC) uses **100** | choice noted — retail value |
-| Value-based scoring (sum of tile face values) | count-based (tiles remaining) | tracked; `--value-scoring` flag exists, inert for 2-player going-out |
-| End on pool-empty-and-stuck; final turn each | 100-turn cap; deck-empty draw = no-op | tracked; `--end-on-stuck` flag exists |
-| Per-turn time limit (60s retail / 40s tourn.) + incomplete-move penalty (revert + draw 3) | no time limit | not modeled (irrelevant to a solver that plays instantly) |
-| Never-melded penalty (100 / 200, tournament) | none | not modeled (tournament-only aggregation rule) |
-| Tournament aggregation (games won, ties by points) | mirror-pair win rate / `pair_net` | not applicable — we measure per-pair, not multi-round standings |
+| Official rule                                                                                      | Our variant                                                                             | Status                                                                                      |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 2 jokers (wildcards)                                                                               | jokerless (104 tiles)                                                                   | tracked; R11 in progress (`--with-jokers`)                                                |
+| **Joker retrieval** (replace on table, replay same turn, ≥1 rack tile, only after own meld) | **not implemented** — jokers are wildcards + a 30 penalty only, never retrieved  | **new explicit gap** — the biggest missing joker sub-rule; deferred in R11           |
+| **Joker value in initial meld** = represented tile's value                                   | current ILP counts`JOKER.number = 0` → **undercounts** the meld (conservative) | **known limitation**; the DP joker extension fixes it automatically (vgain = n×gain) |
+| Joker rack penalty                                                                                 | we use**30** (retail); tournament (NZRC) uses **100**                       | choice noted — retail value                                                                |
+| Value-based scoring (sum of tile face values)                                                      | count-based (tiles remaining)                                                           | tracked;`--value-scoring` flag exists, inert for 2-player going-out                       |
+| End on pool-empty-and-stuck; final turn each                                                       | 100-turn cap; deck-empty draw = no-op                                                   | tracked;`--end-on-stuck` flag exists                                                      |
+| Per-turn time limit (60s retail / 40s tourn.) + incomplete-move penalty (revert + draw 3)          | no time limit                                                                           | not modeled (irrelevant to a solver that plays instantly)                                   |
+| Never-melded penalty (100 / 200, tournament)                                                       | none                                                                                    | not modeled (tournament-only aggregation rule)                                              |
+| Tournament aggregation (games won, ties by points)                                                 | mirror-pair win rate /`pair_net`                                                      | not applicable — we measure per-pair, not multi-round standings                            |
 
 **Takeaway:** our simplifications are exactly the ones already documented (jokers,
 scoring, deck/turn end), plus **two joker sub-rules made explicit here** —

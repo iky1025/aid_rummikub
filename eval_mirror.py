@@ -75,6 +75,33 @@ def make_policy(args):
             policy = _wrap_endgame(policy, args)
         return policy
 
+    if args.policy == "greedy_hold":
+        # Hard-hold test: play greedy (candidate 0 = max-play), BUT never spend a
+        # hand joker unless the move goes out (wins) or there is no non-joker
+        # play (then draw to keep it). Directly tests "does holding jokers help
+        # win-rate?" without any rollout / distillation. JIDX=52 is the joker
+        # slot; cand_feats[i] = [next_hand(53), next_table(53)], all /2-scaled.
+        JIDX = 52
+        def policy(env, obs):
+            mask = obs["mask"]; state = obs["state"]; cf = obs["cand_feats"]
+            n = max_candidates
+            if mask[:n].sum() == 0:
+                return n                              # forced draw
+            if state[JIDX] <= 1e-6:
+                return 0                              # no joker -> plain greedy
+            if cf[0][:53].sum() <= 1e-6:
+                return 0                              # candidate 0 wins -> take it
+            if cf[0][JIDX] >= state[JIDX] - 1e-6:
+                return 0                              # greedy already keeps the joker
+            # candidate 0 dumps the joker: use the best joker-KEEPING play instead
+            for i in range(n):
+                if mask[i] > 0 and cf[i][JIDX] >= state[JIDX] - 1e-6:
+                    return i                          # ordered max-play-first
+            return n                                  # none -> draw to hold the joker
+        if args.endgame_search:
+            policy = _wrap_endgame(policy, args)
+        return policy
+
     if args.policy == "student":
         import numpy as np_
         import torch
@@ -238,7 +265,7 @@ def _pair_worker(payload):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--policy",
-                        choices=["greedy", "rollout", "model", "random", "student"],
+                        choices=["greedy", "greedy_hold", "rollout", "model", "random", "student"],
                         required=True)
     parser.add_argument("--model", default="distill_s1s_dagger1.pt")
     parser.add_argument("--opponent", choices=["ilp", "random"], default="ilp",

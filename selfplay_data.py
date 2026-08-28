@@ -143,6 +143,7 @@ def play_game(teacher, seed, seat, args, actor=None):
         initial_meld_value=args.initial_meld_value,
         with_jokers=getattr(args, "with_jokers", False),
         generating_candidates=getattr(args, "generating_candidates", False),
+        end_on_stuck=getattr(args, "end_on_stuck", False),
     )
     obs, _ = env.reset(seed=seed)
     records = []
@@ -240,6 +241,12 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--max-candidates", type=int, default=20)
     parser.add_argument("--max-turns", type=int, default=100)
+    parser.add_argument("--end-on-stuck", action="store_true",
+                        help="official pool-empty-and-stuck end (deck-bounded "
+                             "~92 rounds, so max-turns=100 stays an unhit "
+                             "backstop). Ends degenerate draw-spam games at the "
+                             "natural stuck point with a real win/loss outcome "
+                             "instead of padding to max-turns.")
     parser.add_argument("--initial-meld-value", type=int, default=30)
     # rollout teacher knobs (same defaults as eval_mirror fair combo)
     parser.add_argument("--determinizations", type=int, default=8)

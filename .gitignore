@@ -31,4 +31,4 @@ skills-lock.json
 build/
 sweep_cy.c
 *.so
-.claude/settings.local.json
+.claude/
