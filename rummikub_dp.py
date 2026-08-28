@@ -14,10 +14,20 @@ Optional: minimum value of played hand tiles (initial meld).
 Traceback reconstructs a concrete arrangement (list of valid sets).
 """
 
-from collections import Counter
+import os
+from collections import Counter, OrderedDict
 from itertools import combinations, combinations_with_replacement, product
 
 from rummikub_solver import COLORS, JOKER, Tile
+
+try:
+    # Cython-compiled jokered layer sweep (~3x on big tables). Behaviour-
+    # identical to _sweep_joker below (crosschecked on 4000 random positions);
+    # falls back to the pure-Python method if the .so isn't built for this
+    # platform. Build: python setup_cy.py build_ext --inplace
+    import sweep_cy as _SWEEP_CY
+except Exception:
+    _SWEEP_CY = None
 
 
 def _build_group_partitions():
@@ -139,14 +149,21 @@ class RummikubDP:
         # cached (used, sets) is never mutated by any caller — every consumer
         # copies via list(s) / Counter(s) / flatten (audited) — so sharing the
         # object is safe. Verified byte-identical via solver_regression.py.
-        self._cache = {}
-        # Cap bounds memory: cleared wholesale on overflow. Behaviour-neutral —
-        # only affects when a cache miss recurs, never a return value. 200k keeps
-        # the hot within-decision working set (where nearly all of the 54%
-        # redundancy lives, used within seconds), so the 2.3x speedup is
-        # preserved; the long cross-game tail is dropped. 1M let 4 workers grow
-        # to ~8GB collectively and OOM before any single cache hit its cap.
-        self._cache_cap = 200_000
+        # LRU cache (2026-07-22): OrderedDict keyed on the exact multiset inputs,
+        # evicting the least-recently-used entry once it exceeds the cap — instead
+        # of the old wholesale-clear-at-cap, which periodically nuked the hot set
+        # too. Behaviour-neutral (only affects when a cache miss recurs, never a
+        # return value). Why LRU: within one decision the 8 determinizations
+        # re-solve identical positions within seconds, so recency == our hit
+        # pattern; LRU keeps exactly that hot working set while bounding memory.
+        # Why the small cap: the old 200k cap let a single monster jokered
+        # endgame decision (deep DFS + rollouts) accumulate ~200k FAT entries =
+        # 6.85GB in ONE decision before clearing -> OOM-killed a worker on the
+        # 7.8GB server (2026-07-22). 15k caps a worker at ~0.5GB while comfortably
+        # covering the ~1-2k hot within-decision working set (so the speedup is
+        # preserved). Data-invariant: the cache is pure memoization.
+        self._cache = OrderedDict()
+        self._cache_cap = int(os.environ.get("DP_CACHE_CAP", "15000"))
 
     def solve(self, hand_counter, table_counter, min_play_value=0):
         """Maximize hand tiles used; all table tiles must be used.
@@ -161,11 +178,12 @@ class RummikubDP:
                 frozenset(table_counter.items()), min_play_value)
         cached = self._cache.get(ckey, _MISS)
         if cached is not _MISS:
+            self._cache.move_to_end(ckey)      # LRU: mark most-recently-used
             return cached
         result = self._solve_uncached(hand_counter, table_counter, min_play_value)
-        if len(self._cache) >= self._cache_cap:
-            self._cache.clear()
         self._cache[ckey] = result
+        if len(self._cache) > self._cache_cap:
+            self._cache.popitem(last=False)    # evict least-recently-used
         return result
 
     def _solve_uncached(self, hand_counter, table_counter, min_play_value=0):
@@ -671,6 +689,10 @@ class RummikubDP:
     def _sweep_joker(self, hand_counter, table_counter, jt, jh):
         """Shared jokered max-play sweep. Returns (final_layer, parents, J) or
         None. State carries j = jokers placed; table jokers (jt) are mandatory."""
+        if _SWEEP_CY is not None:
+            return _SWEEP_CY.sweep_joker(
+                hand_counter, table_counter, jt, jh,
+                RUN_TRANS, GROUP_PARTS_J, EMPTY_PAIR)
         J = jt + jh
         avail = {}
         mand = {}

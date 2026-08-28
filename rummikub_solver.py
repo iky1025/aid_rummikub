@@ -296,6 +296,18 @@ class RummikubILPSolver:
         self._dp_solve_count = 0
         self._shadow = None
 
+    def clear_cache(self):
+        """Drop the DP solve cache. Callers clear it at decision boundaries so
+        the cache holds only one decision's hot working set (where ~all of the
+        speedup lives — the determinizations re-solving identical positions
+        within seconds) instead of accumulating across a whole game. Bounds
+        memory to O(one decision) independent of game length; jokered positions
+        have fat cache values + a far larger state space, so an un-cleared cache
+        grows to tens of GB over a long game (2026-07-21 WindowServer watchdog
+        reboot: workers at 18-35GB RSS)."""
+        if self.dp is not None:
+            self.dp._cache.clear()
+
     def _crosscheck(self, dp_result, hand_tiles, table_sets, require, min_val, ignore_tbl):
         if self._shadow is None:
             self._shadow = RummikubILPSolver(use_dp=False)
@@ -786,13 +798,23 @@ class RummikubILPSolver:
             available = hand_tiles
         else:
             available = hand_tiles + flatten(table_sets)
-        candidates = filter_available_sets(available)
-
-        active_types = set()
-        for c in candidates:
-            active_types.update(c.real_used)
         hand_counter = Counter(hand_tiles)
-        active = {t: n for t, n in hand_counter.items() if t in active_types}
+        if self.dp is not None:
+            # dp.feasible (below) is the real feasibility oracle. The only use of
+            # filter_available_sets here is to prune hand tiles that can't be in
+            # ANY set. With jokers that set-generation explodes — it builds joker
+            # variants (position->joker replacements) of EVERY base set, called
+            # per subset per DFS node (2026-07-23 py-spy: minutes stuck in
+            # _joker_variants). Skip it under the DP: let every hand tile be
+            # active. subset_limit still bounds the space and each subset is
+            # DP-checked, so the returned move set is identical.
+            active = dict(hand_counter)
+        else:
+            candidates = filter_available_sets(available)
+            active_types = set()
+            for c in candidates:
+                active_types.update(c.real_used)
+            active = {t: n for t, n in hand_counter.items() if t in active_types}
 
         space = 1
         for n in active.values():

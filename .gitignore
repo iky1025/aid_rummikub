@@ -17,3 +17,18 @@ scratchpad/
 
 # Internal working notes (kept local, not published)
 CLAUDE.md
+
+# Presentation deck & assets (project-showcase talk — kept local, not tracked)
+presentation.html
+presentation_artifact.html
+slides_assets/
+docs/발표_대본.md
+# frontend-slides skill install (used only to build the deck)
+.agents/
+skills-lock.json
+
+# Cython build artifacts (sweep_cy.pyx + setup_cy.py are tracked; these are generated)
+build/
+sweep_cy.c
+*.so
+.claude/settings.local.json
