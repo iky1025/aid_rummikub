@@ -13,12 +13,16 @@ from ppo_env import RummikubPPOEnv
 from ppo_model import ActorCritic
 
 
-def make_env_fn(seed, alternate_first_player=False, initial_meld_value=0):
+def make_env_fn(seed, alternate_first_player=False, initial_meld_value=0,
+                reward_mode="dense", max_candidates=20, ppo_player=0):
     def _init():
         return RummikubPPOEnv(
             seed=seed,
             alternate_first_player=alternate_first_player,
             initial_meld_value=initial_meld_value,
+            reward_mode=reward_mode,
+            max_candidates=max_candidates,
+            ppo_player=ppo_player,
         )
     return _init
 
@@ -62,21 +66,47 @@ def train(args):
     np.random.seed(seed)
 
     n_envs = args.n_envs
-    env_fns = [
-        make_env_fn(
-            seed + i,
-            alternate_first_player=args.alternate_first_player,
-            initial_meld_value=args.initial_meld_value,
-        )
-        for i in range(n_envs)
-    ]
+    if args.mirror_envs:
+        # R12: mirror-paired env layout. Envs 2k and 2k+1 are constructed with
+        # the SAME seed, so their deck RNG streams stay in lockstep and episode
+        # j is the identical deal in both -- but one plays seat 0 and the other
+        # seat 1. That is the eval harness's mirror pair moved into training, so
+        # the deal luck that dominates this game (the critic can only explain
+        # ~8% of return variance) is balanced inside every batch instead of
+        # being left in the advantages. Requires an even n_envs and fixed seats.
+        if n_envs % 2:
+            raise SystemExit("--mirror-envs needs an even --n-envs")
+        if args.alternate_first_player:
+            raise SystemExit("--mirror-envs fixes seats; drop --alternate-first-player")
+        env_fns = [
+            make_env_fn(
+                seed + (i // 2),
+                alternate_first_player=False,
+                initial_meld_value=args.initial_meld_value,
+                reward_mode=args.reward_mode,
+                max_candidates=args.max_candidates,
+                ppo_player=i % 2,
+            )
+            for i in range(n_envs)
+        ]
+    else:
+        env_fns = [
+            make_env_fn(
+                seed + i,
+                alternate_first_player=args.alternate_first_player,
+                initial_meld_value=args.initial_meld_value,
+                reward_mode=args.reward_mode,
+                max_candidates=args.max_candidates,
+            )
+            for i in range(n_envs)
+        ]
     if args.use_subproc:
         vec_env = SubprocVecEnv(env_fns, start_method=args.start_method)
     else:
         vec_env = DummyVecEnv(env_fns)
     print(f"vec_env: {'SubprocVecEnv' if args.use_subproc else 'DummyVecEnv'} with {n_envs} envs")
 
-    max_candidates = 20
+    max_candidates = args.max_candidates
     obs_dim = 52 + 52 + 1 + 1 + 1 + 1  # hand + table + deck + opp_hand + meld_ppo + meld_opp
     cand_feat_dim = 52 + 52
 
@@ -89,7 +119,36 @@ def train(args):
     if args.resume:
         print(f"resuming from: {args.resume}")
         state_dict = torch.load(args.resume, map_location=device, weights_only=True)
-        model.load_state_dict(state_dict)
+        # strict=False so a DistillStudent checkpoint loads straight into
+        # ActorCritic: DistillStudent SUBCLASSES ActorCritic, so every actor /
+        # critic tensor matches by name and only its opp_hand_head (the
+        # distillation-time auxiliary head) is left over. Verified on real
+        # observations: logits identical to 0.0, argmax agreement 1.000.
+        res = model.load_state_dict(state_dict, strict=False)
+        if res.missing_keys:
+            raise SystemExit(f"checkpoint is missing {res.missing_keys}")
+        if res.unexpected_keys:
+            print(f"  (dropped non-ActorCritic tensors: {res.unexpected_keys})")
+
+    # R12: KL anchor. Fine-tuning a distilled 67.8% policy with PPO destroys it
+    # in a handful of updates unless the new policy is tethered to the old one
+    # (the RLHF recipe). ref_model is a frozen copy of the STARTING policy; the
+    # loss pays kl_coef * KL(pi || pi_ref) on every masked action distribution.
+    # kl_coef = 0 reproduces plain PPO exactly.
+    ref_model = None
+    if args.kl_coef > 0 or args.anchor_coef > 0:
+        if not args.resume:
+            raise SystemExit("anchoring needs --resume: nothing to anchor to")
+        ref_model = ActorCritic(
+            obs_dim=obs_dim, cand_feat_dim=cand_feat_dim,
+            max_candidates=max_candidates,
+        ).to(device)
+        ref_model.load_state_dict(model.state_dict())
+        ref_model.eval()
+        for p_ in ref_model.parameters():
+            p_.requires_grad_(False)
+        print(f"anchor on: kl={args.kl_coef} rank={args.anchor_coef} "
+              f"margin={args.anchor_margin}")
 
     optimizer = Adam(model.parameters(), lr=args.lr_init)
 
@@ -108,7 +167,10 @@ def train(args):
     gae_lambda = 0.95
     clip_range = args.clip_range
     value_coef = 0.1
-    entropy_coef = 0.01
+    # R12: an entropy bonus is exploration pressure -- it actively flattens a
+    # sharp distilled policy, which is the opposite of what a fine-tune wants.
+    # Default keeps the R1-R7 value so old runs reproduce; set 0 to fine-tune.
+    entropy_coef = args.entropy_coef
 
     lr_scheduler = LinearLR(
         optimizer,
@@ -296,6 +358,8 @@ def train(args):
         actor_loss_sum = 0.0
         critic_loss_sum = 0.0
         entropy_sum = 0.0
+        kl_sum = 0.0
+        anchor_sum = 0.0
         update_steps = 0
 
         for _ in range(ppo_epochs):
@@ -321,6 +385,42 @@ def train(args):
 
                 loss = actor_loss + value_coef * critic_loss - entropy_coef * entropy_loss
 
+                kl_loss = torch.zeros((), device=device)
+                anchor_loss = torch.zeros((), device=device)
+                if ref_model is not None:
+                    with torch.no_grad():
+                        ref_logits = ref_model.forward_actor(obs_state_t[b], obs_cand_t[b])
+                        ref_logits = ref_logits.masked_fill(obs_mask_t[b] == 0, -1e9)
+                        ref_logp = F.log_softmax(ref_logits, dim=-1)
+                        ref_top = ref_logits.argmax(dim=-1)
+                    cur_logits = model.forward_actor(obs_state_t[b], obs_cand_t[b])
+                    cur_logits = cur_logits.masked_fill(obs_mask_t[b] == 0, -1e9)
+
+                    if args.kl_coef > 0:
+                        cur_logp = F.log_softmax(cur_logits, dim=-1)
+                        kl = (cur_logp.exp() * (cur_logp - ref_logp)).sum(-1)
+                        kl_loss = kl.mean()
+                        loss = loss + args.kl_coef * kl_loss
+
+                    if args.anchor_coef > 0:
+                        # RANK anchor. Measured on the first fine-tune attempt:
+                        # distribution KL stayed at 0.03 while 13.1% of argmax
+                        # decisions flipped, because this policy's top-1 and
+                        # top-2 logits sit ~0.06 apart -- the deployed argmax
+                        # rides a knife edge that a KL penalty does not feel.
+                        # So penalise the thing that is actually deployed: keep
+                        # the STARTING policy's argmax ranked first by at least
+                        # anchor_margin, and pay a hinge cost when it is not.
+                        star = cur_logits.gather(1, ref_top.unsqueeze(1)).squeeze(1)
+                        others = cur_logits.scatter(
+                            1, ref_top.unsqueeze(1),
+                            torch.full((len(ref_top), 1), -1e9,
+                                       dtype=cur_logits.dtype, device=cur_logits.device))
+                        best_other = others.max(dim=1).values
+                        anchor_loss = F.relu(
+                            args.anchor_margin - (star - best_other)).mean()
+                        loss = loss + args.anchor_coef * anchor_loss
+
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -328,6 +428,8 @@ def train(args):
                 actor_loss_sum += actor_loss.item()
                 critic_loss_sum += critic_loss.item()
                 entropy_sum += entropy_loss.item()
+                kl_sum += float(kl_loss)
+                anchor_sum += float(anchor_loss)
                 update_steps += 1
 
         episodes = len(episode_rewards)
@@ -353,6 +455,8 @@ def train(args):
         avg_actor_loss = actor_loss_sum / max(1, update_steps)
         avg_critic_loss = critic_loss_sum / max(1, update_steps)
         avg_entropy = entropy_sum / max(1, update_steps)
+        avg_kl = kl_sum / max(1, update_steps)
+        avg_anchor = anchor_sum / max(1, update_steps)
         elapsed = time.time() - train_start
 
         current_lr = lr_scheduler.get_last_lr()[0]
@@ -374,6 +478,7 @@ def train(args):
             f"premeld={pre_meld_ratio:.2f} "
             f"wm={avg_win_margin:4.1f} lm={avg_loss_margin:4.1f} es={expected_score:+.2f} "
             f"a={avg_actor_loss:+.3f} cl={avg_critic_loss:.2f} ent={avg_entropy:.3f} "
+            f"kl={avg_kl:.4f} anc={avg_anchor:.4f} "
             f"lr={current_lr:.1e} best_es={best_expected_score:+.2f}"
         )
 
@@ -404,6 +509,29 @@ def train(args):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--reward-mode", choices=["dense", "sparse"],
+                        default="dense",
+                        help="dense = R1-R7 shaping (its optimum IS the greedy "
+                             "opponent); sparse = game outcome only "
+                             "(+1/-1/0). Use sparse to fine-tune a distilled "
+                             "policy.")
+    parser.add_argument("--max-candidates", type=int, default=20)
+    parser.add_argument("--entropy-coef", type=float, default=0.01,
+                        help="exploration bonus. Set 0 when fine-tuning a "
+                             "distilled policy -- it flattens a sharp policy.")
+    parser.add_argument("--mirror-envs", action="store_true",
+                        help="pair envs on identical decks with swapped seats "
+                             "(the eval harness's mirror pair, in training)")
+    parser.add_argument("--anchor-coef", type=float, default=0.0,
+                        help="weight of the top-1 RANK anchor: hinge cost when "
+                             "the starting policy's argmax stops being ranked "
+                             "first. Requires --resume.")
+    parser.add_argument("--anchor-margin", type=float, default=0.05,
+                        help="required logit lead of the anchored action")
+    parser.add_argument("--kl-coef", type=float, default=0.0,
+                        help="weight of KL(pi || pi_start). Requires --resume. "
+                             "Keeps a fine-tune from destroying the policy it "
+                             "started from; 0 = plain PPO.")
     parser.add_argument("--n-envs", type=int, default=8,
                         help="number of parallel envs")
     parser.add_argument("--use-subproc", action="store_true", default=True,

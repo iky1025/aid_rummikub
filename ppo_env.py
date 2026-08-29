@@ -66,6 +66,7 @@ class RummikubPPOEnv(gym.Env):
         value_scoring=False,
         end_on_stuck=False,
         with_jokers=False,
+        reward_mode="dense",
     ):
         super().__init__()
         self.with_jokers = with_jokers
@@ -80,6 +81,17 @@ class RummikubPPOEnv(gym.Env):
         # play (official pool-empty-and-stuck end), with the lower tile-value
         # sum winning; otherwise it rides to the max_turns safety cap as before.
         self.value_scoring = value_scoring
+        # R12: reward_mode. "dense" is the R1-R7 shaping (+0.1/played tile,
+        # -0.5 draw, -0.01 per turn, ...). Its optimal policy is "play as many
+        # tiles as possible every turn" -- i.e. EXACTLY the greedy opponent, so
+        # 50% is a fixed point of learning (diagnosis cause #1). "sparse" pays
+        # only the game outcome (+1 win / -1 loss / 0 tie), which is the only
+        # reward whose optimum is actually "win more games". Use sparse for any
+        # fine-tune of the distilled policy; dense only reproduces R1-R7.
+        assert reward_mode in ("dense", "sparse"), reward_mode
+        self.reward_mode = reward_mode
+        self._w_dense = 1.0 if reward_mode == "dense" else 0.0
+        self._w_sparse = 0.0 if reward_mode == "dense" else 1.0
         self.end_on_stuck = end_on_stuck
         self._stuck_streak = 0
         self.ppo_player = ppo_player
@@ -289,12 +301,13 @@ class RummikubPPOEnv(gym.Env):
         if action < len(candidates):
             result = candidates[action]
             self.env.apply_solution(result, append_to_table=ppo_ignore_tbl)
-            reward += 0.1 * result.used_hand_tile_count
+            reward += self._w_dense * 0.1 * result.used_hand_tile_count
             self.first_meld_done[self.ppo_player] = True
             self._stuck_streak = 0  # a play breaks a stuck streak
             if len(self.env.hand) == 0:
                 ilp_remaining = len(self.hands[self.ilp_player])
-                reward += 5.0 + 0.3 * ilp_remaining
+                reward += self._w_dense * (5.0 + 0.3 * ilp_remaining)
+                reward += self._w_sparse * 1.0        # win
                 self.hands[self.ppo_player] = list(self.env.hand)
                 obs = self._terminal_obs()
                 info = self._build_info(len(candidates), 0)
@@ -307,14 +320,14 @@ class RummikubPPOEnv(gym.Env):
         else:
             drawn_tile = self.env.draw_tile()
             if drawn_tile is None:
-                reward -= 1.0
+                reward -= self._w_dense * 1.0
                 self._stuck_streak += 1  # pool-empty pass (can't draw, can't play)
             else:
-                reward -= 0.5
+                reward -= self._w_dense * 0.5
                 self._stuck_streak = 0
 
         self.hands[self.ppo_player] = list(self.env.hand)
-        reward -= 0.01
+        reward -= self._w_dense * 0.01
 
         if self.end_on_stuck and self._stuck_streak >= 2:
             return self._stuck_terminal(reward, ppo_was_pre_meld, len(candidates))
@@ -332,14 +345,15 @@ class RummikubPPOEnv(gym.Env):
             self._stuck_streak = 0  # drew a real tile
 
         if ilp_used_hand_tiles > 0:
-            reward -= 0.02 * ilp_used_hand_tiles
+            reward -= self._w_dense * 0.02 * ilp_used_hand_tiles
 
         if self.end_on_stuck and not ilp_done and self._stuck_streak >= 2:
             return self._stuck_terminal(reward, ppo_was_pre_meld, len(candidates))
 
         if ilp_done:
             ppo_remaining = len(self.hands[self.ppo_player])
-            reward -= 5.0 + 0.3 * ppo_remaining
+            reward -= self._w_dense * (5.0 + 0.3 * ppo_remaining)
+            reward -= self._w_sparse * 1.0        # loss
             obs = self._terminal_obs()
             info = self._build_info(len(candidates), ilp_used_hand_tiles)
             info["outcome"] = "loss"
@@ -362,8 +376,10 @@ class RummikubPPOEnv(gym.Env):
         if truncated:
             ppo_s = self._score(self.hands[self.ppo_player])
             ilp_s = self._score(self.hands[self.ilp_player])
-            reward += 0.3 * (len(self.hands[self.ilp_player])
-                             - len(self.hands[self.ppo_player]))
+            # sparse: a turn-cap timeout is not a game result -> 0, so the
+            # policy is never paid for hoarding a tile lead it never converted.
+            reward += self._w_dense * 0.3 * (len(self.hands[self.ilp_player])
+                                             - len(self.hands[self.ppo_player]))
             info["outcome"] = "timeout"
             info["win_margin"] = max(0, ilp_s - ppo_s)
             info["loss_margin"] = max(0, ppo_s - ilp_s)
@@ -382,12 +398,12 @@ class RummikubPPOEnv(gym.Env):
             info["outcome"] = "win"
             info["win_margin"] = ilp_s - ppo_s
             info["loss_margin"] = 0
-            reward += 5.0
+            reward += self._w_dense * 5.0 + self._w_sparse * 1.0
         elif ilp_s < ppo_s:
             info["outcome"] = "loss"
             info["win_margin"] = 0
             info["loss_margin"] = ppo_s - ilp_s
-            reward -= 5.0
+            reward -= self._w_dense * 5.0 + self._w_sparse * 1.0
         else:
             info["outcome"] = "timeout"  # exact tie
             info["win_margin"] = 0
