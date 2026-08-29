@@ -201,6 +201,15 @@ def play_game(teacher, seed, seat, args, actor=None):
         r["net"] = np.int16(net)
         r["seat"] = np.int8(seat)
         r["seed"] = np.int32(seed)
+    # R12: drop both solve caches at game boundaries. They are pure memoization
+    # (never a return value), but each holds up to DP_CACHE_CAP fat entries and
+    # BOTH the env's solver and the teacher's persist across games -- with N
+    # workers that is N x 2 x cap live at once, which is what OOM-killed the
+    # 8-worker dagger4 run on a 16GB box at 108/500 pairs (the pool only
+    # recycles every workers*recycle_after pairs, far too late to help).
+    env.env.solver.clear_cache()
+    if hasattr(teacher, "solver"):
+        teacher.solver.clear_cache()
     return records
 
 

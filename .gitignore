@@ -23,6 +23,7 @@ presentation.html
 presentation_artifact.html
 slides_assets/
 docs/발표_대본.md
+docs/발표_슬라이드_텍스트.md
 # frontend-slides skill install (used only to build the deck)
 .agents/
 skills-lock.json
@@ -32,3 +33,6 @@ build/
 sweep_cy.c
 *.so
 .claude/
+
+# R12 학습 로그
+train_log_*.csv

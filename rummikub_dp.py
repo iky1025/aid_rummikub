@@ -135,6 +135,19 @@ def _build_run_transitions():
 RUN_TRANS = _build_run_transitions()
 EMPTY_PAIR = (0, 0)
 SAFE = {0, 3}
+class GenBudgetExceeded(Exception):
+    """generate_moves gave up: the memo's suffix sets grew past the budget.
+
+    The docstring's premise -- "the distinct-move count is small so those sets
+    stay small" -- fails when the hand AND the table are both large: measured
+    on synthetic positions, hand 22 x table 45 yields 149,903 distinct moves
+    (0.68GB) and hand 16 x table 75 blows past 3GB. In a DAgger run the student
+    draws its hand up to ~30 tiles while the table grows past 70, which put five
+    worker processes at a 17-22GB peak footprint each on a 16GB box and wedged
+    the machine in swap. The budget converts that hang into a cheap miss so the
+    caller can fall back to solve_many."""
+
+
 _MISS = object()  # sentinel: distinguishes "not cached" from a cached None
 
 
@@ -219,7 +232,8 @@ class RummikubDP:
         layer, parents, J = swept
         return self._all_k_joker(layer, parents, jt)
 
-    def generate_moves(self, hand_counter, table_counter, min_play_value=0):
+    def generate_moves(self, hand_counter, table_counter, min_play_value=0,
+                       max_entries=None):
         """R11 generating DP: enumerate ALL distinct playable moves in one
         memoized sweep — no ILP exclusions, no 2^n sub-multiset iteration.
 
@@ -232,12 +246,30 @@ class RummikubDP:
         arrangements. Complete (matches enumerate_moves with 0 mismatch) and
         fast even with jokers, where sub-multiset enumeration blows up.
 
+        Returns None when the memo's suffix sets exceed max_entries (default
+        GEN_MAX_ENTRIES=2000000) -- see GenBudgetExceeded. Callers MUST handle
+        None by falling back to a capped generator.
+
+        Budget calibration (synthetic hand x table grid, peak RSS per call):
+        200k rejects almost everything; 2M admits hand<=22/table<=45 and
+        hand<=10/table<=83 at a 0.68GB worst case; 5M let two cells blow past a
+        2.5GB cap, because the check fires only after one state's set is built
+        and a single state can overshoot. 2M is the largest budget that stayed
+        bounded across the whole grid.
+
         Jokered supports min_play_value == 0 only (joker meld value is not
         modelled, same limitation as the joker DP)."""
+        if max_entries is None:
+            max_entries = int(os.environ.get("GEN_MAX_ENTRIES", "2000000"))
         jt = table_counter.get(JOKER, 0)
         jh = hand_counter.get(JOKER, 0)
         if jt + jh == 0:
-            raw = self._gen_jokerless(hand_counter, table_counter, min_play_value)
+            budget = [max_entries] if max_entries > 0 else None
+            try:
+                raw = self._gen_jokerless(hand_counter, table_counter,
+                                          min_play_value, budget)
+            except GenBudgetExceeded:
+                return None            # caller falls back to solve_many
             moves = [Counter({Tile(COLORS[c], n): p for (c, n), p in S})
                      for S in raw]
         elif min_play_value == 0:
@@ -259,7 +291,8 @@ class RummikubDP:
         moves.sort(key=lambda m: -sum(m.values()))
         return moves
 
-    def _gen_jokerless(self, hand_counter, table_counter, min_play_value):
+    def _gen_jokerless(self, hand_counter, table_counter, min_play_value,
+                       budget=None):
         avail = {}
         mand = {}
         for c in range(4):
@@ -322,6 +355,10 @@ class RummikubDP:
                                             d[k] = d.get(k, 0) + v
                                         out.add(frozenset(d.items()))
             out = frozenset(out)
+            if budget is not None:
+                budget[0] -= len(out)
+                if budget[0] < 0:
+                    raise GenBudgetExceeded
             memo[key] = out
             return out
 

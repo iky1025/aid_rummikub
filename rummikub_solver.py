@@ -728,6 +728,15 @@ class RummikubILPSolver:
         hand_counter = Counter(hand_tiles)
         moves = self.dp.generate_moves(
             hand_counter, table_counter, min_play_value)
+        if moves is None:
+            # Budget exceeded (hand AND table both large -- the memo's suffix
+            # sets explode there; see GenBudgetExceeded). Fall back to the
+            # capped generator. NOTE the None/[] distinction is load-bearing:
+            # [] means "no legal move" (a forced draw) while None means "gave
+            # up", and collapsing them would silently turn a playable position
+            # into a draw.
+            return self.solve_many(hand_tiles, table_sets, max_candidates,
+                                   True, min_play_value, ignore_table)
         if not moves:
             return []
 
