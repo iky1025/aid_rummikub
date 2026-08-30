@@ -20,3 +20,7 @@ train_diverse.log
 eval_diverse.log
 eval_diverse_progress.json
 eval_diverse_results.jsonl
+train_balanced_seat.log
+eval_balanced_seat.log
+eval_balanced_seat_progress.json
+eval_balanced_seat_results.jsonl

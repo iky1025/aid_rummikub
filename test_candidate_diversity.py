@@ -36,8 +36,11 @@ def main():
     assert len(state_keys) == len(candidates)
 
     strategies = {candidate.strategy for candidate in candidates}
-    assert "preserve_run" in strategies
-    assert "preserve_group" in strategies
+    assert any(strategy.startswith("preserve_run") for strategy in strategies)
+    assert any(strategy.startswith("preserve_group") for strategy in strategies)
+    used_tile_counts = {candidate.used_hand_tile_count for candidate in candidates}
+    assert best_count - 1 in used_tile_counts
+    assert best_count - 2 in used_tile_counts
 
     stats = env.solver.last_solve_many_stats
     assert stats["strategy_solution_count"] >= len(candidates)

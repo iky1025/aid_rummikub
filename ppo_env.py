@@ -77,6 +77,12 @@ class RummikubPPOEnv:
         self._sync_env_hand(self.ppo_player)
         return self.get_observation(self.ppo_player)
 
+    def set_ppo_player(self, ppo_player):
+        if ppo_player not in (0, 1):
+            raise ValueError("ppo_player must be 0 or 1")
+        self.ppo_player = ppo_player
+        self.ilp_player = 1 - ppo_player
+
     def step(self, action):
         if self.current_player != self.ppo_player:
             raise RuntimeError("step(action) must be called on PPO player's turn.")

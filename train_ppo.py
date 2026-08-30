@@ -36,6 +36,7 @@ def train(
     resume_model_path=None,
     initial_completed_episodes=0,
     status_path=None,
+    alternate_ppo_player=True,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     np.random.seed(42)
@@ -146,6 +147,8 @@ def train(
                     episode_losses += 1
                 else:
                     episode_timeouts += 1
+                if alternate_ppo_player:
+                    env.set_ppo_player(1 - env.ppo_player)
                 env.reset()
                 if (
                     target_episodes is not None
@@ -309,6 +312,11 @@ if __name__ == "__main__":
     parser.add_argument("--resume-model-path")
     parser.add_argument("--initial-completed-episodes", type=int, default=0)
     parser.add_argument("--status-path")
+    parser.add_argument(
+        "--no-alternate-ppo-player",
+        action="store_true",
+        help="keep PPO on seat 0 instead of alternating seats during training",
+    )
     args = parser.parse_args()
     train(
         n_steps=args.n_steps,
@@ -318,4 +326,5 @@ if __name__ == "__main__":
         resume_model_path=args.resume_model_path,
         initial_completed_episodes=args.initial_completed_episodes,
         status_path=args.status_path,
+        alternate_ppo_player=not args.no_alternate_ppo_player,
     )

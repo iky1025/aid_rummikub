@@ -482,6 +482,32 @@ class RummikubILPSolver:
         best_used_count = None
         strategy_solution_count = 0
 
+        def accept_result(result, count_as_strategy=False):
+            nonlocal raw_solution_count
+            nonlocal duplicate_solution_count
+            nonlocal strategy_solution_count
+
+            if (
+                result.status != "Optimal"
+                or result.used_hand_tile_count <= 0
+                or not result.selected_indices
+            ):
+                return False
+
+            self._add_exclusion_constraint(context, result.selected_indices)
+            raw_solution_count += 1
+            if count_as_strategy:
+                strategy_solution_count += 1
+
+            state_key = self._result_state_key(result, table_sets)
+            if state_key in seen_states:
+                duplicate_solution_count += 1
+                return False
+
+            seen_states.add(state_key)
+            pool.append(result)
+            return True
+
         for strategy, objective in objectives:
             context.problem.setObjective(objective)
             result = self._solve_context(
@@ -510,17 +536,41 @@ class RummikubILPSolver:
                 minimum_count = max(1, best_used_count - 2)
                 context.problem += context.used_hand_tile_expr >= minimum_count
 
-            self._add_exclusion_constraint(context, result.selected_indices)
-            raw_solution_count += 1
-            strategy_solution_count += 1
+            was_first_solution = not seen_states
+            accept_result(result, count_as_strategy=True)
 
-            state_key = self._result_state_key(result, table_sets)
-            if state_key in seen_states:
-                duplicate_solution_count += 1
-                continue
+            if was_first_solution and max_solutions > 1:
+                objective_by_strategy = dict(objectives)
+                tier_specs = [
+                    (best_used_count - 1, "high_score"),
+                    (best_used_count - 2, "preserve_run"),
+                    (best_used_count - 2, "preserve_group"),
+                ]
+                for target_count, tier_strategy in tier_specs:
+                    if target_count < minimum_count or len(pool) >= max_solutions:
+                        continue
 
-            seen_states.add(state_key)
-            pool.append(result)
+                    tier_objective = objective_by_strategy[tier_strategy]
+                    constraint_name = (
+                        f"candidate_target_{solve_attempt_count}_{target_count}"
+                    )
+                    context.problem.addConstraint(
+                        context.used_hand_tile_expr == target_count,
+                        constraint_name,
+                    )
+                    try:
+                        context.problem.setObjective(tier_objective)
+                        tier_result = self._solve_context(
+                            context,
+                            self._candidate_solver,
+                            hard_timeout=10,
+                            strategy=f"{tier_strategy}_count_{target_count}",
+                        )
+                        solve_attempt_count += 1
+                    finally:
+                        del context.problem.constraints[constraint_name]
+
+                    accept_result(tier_result, count_as_strategy=True)
 
         # Fill any remaining pool slots with additional maximum-tile solutions.
         fallback_attempts = (

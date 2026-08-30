@@ -3,16 +3,16 @@ $ErrorActionPreference = "Stop"
 $repo = $PSScriptRoot
 $python = "C:\Users\leems\AppData\Local\Programs\Python\Python311\python.exe"
 $statusPath = Join-Path $repo "experiment_status.json"
-$progressPath = Join-Path $repo "eval_diverse_progress.json"
-$resultsPath = Join-Path $repo "eval_diverse_results.jsonl"
-$evalLog = Join-Path $repo "eval_diverse.log"
+$progressPath = Join-Path $repo "eval_balanced_seat_progress.json"
+$resultsPath = Join-Path $repo "eval_balanced_seat_results.jsonl"
+$evalLog = Join-Path $repo "eval_balanced_seat.log"
 
 Set-Location -LiteralPath $repo
 
 try {
     & $python eval_ppo.py `
-        --model-path rummikub_ppo_diverse_model.pt `
-        --episodes 100 `
+        --model-path rummikub_ppo_balanced_seat_model.pt `
+        --episodes 500 `
         --workers 4 `
         --results-path $resultsPath `
         --progress-path $progressPath `
